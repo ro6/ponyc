@@ -1226,18 +1226,18 @@ bool target_is_x86(char* t)
 {
   Triple triple = Triple(t);
 
-  const char* arch = Triple::getArchTypePrefix(triple.getArch());
+  const StringRef arch = Triple::getArchTypePrefix(triple.getArch());
 
-  return !strcmp("x86", arch);
+  return arch.equals(StringRef("x86"));
 }
 
 bool target_is_arm(char* t)
 {
   Triple triple = Triple(t);
 
-  const char* arch = Triple::getArchTypePrefix(triple.getArch());
+  const StringRef arch = Triple::getArchTypePrefix(triple.getArch());
 
-  return !strcmp("arm", arch);
+  return arch.equals(StringRef("arm"));
 }
 
 bool target_is_lp64(char* t)
