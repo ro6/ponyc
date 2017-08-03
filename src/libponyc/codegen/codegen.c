@@ -172,6 +172,9 @@ static void init_runtime(compile_t* c)
   c->str__init = stringtab("_init");
   c->str__final = stringtab("_final");
   c->str__event_notify = stringtab("_event_notify");
+  c->str__serialise_space = stringtab("_serialise_space");
+  c->str__serialise = stringtab("_serialise");
+  c->str__deserialise = stringtab("_deserialise");
 
   LLVMTypeRef type;
   LLVMTypeRef params[5];
@@ -222,6 +225,19 @@ static void init_runtime(compile_t* c)
   params[4] = c->i32;
   c->serialise_type = LLVMFunctionType(c->void_type, params, 5, false);
   c->serialise_fn = LLVMPointerType(c->serialise_type, 0);
+
+  // serialise_space
+  // i64 (__object*)
+  params[0] = c->object_ptr;
+  c->custom_serialise_space_fn = LLVMPointerType(
+    LLVMFunctionType(c->i64, params, 1, false), 0);
+
+  // custom_deserialise
+  // void (*)(__object*, void*)
+  params[0] = c->object_ptr;
+  params[1] = c->void_ptr;
+  c->custom_deserialise_fn = LLVMPointerType(
+  LLVMFunctionType(c->void_type, params, 2, false), 0);
 
   // dispatch
   // void (*)(i8*, __object*, $message*)
@@ -428,11 +444,10 @@ static void init_runtime(compile_t* c)
   LLVMSetDereferenceableOrNull(value, 0, HEAP_MIN);
 #endif
 
-  // i8* pony_alloc_final(i8*, intptr, c->final_fn)
+  // i8* pony_alloc_final(i8*, intptr)
   params[0] = c->void_ptr;
   params[1] = c->intptr;
-  params[2] = c->final_fn;
-  type = LLVMFunctionType(c->void_ptr, params, 3, false);
+  type = LLVMFunctionType(c->void_ptr, params, 2, false);
   value = LLVMAddFunction(c->module, "pony_alloc_final", type);
 #if PONY_LLVM >= 309
   LLVMAddAttributeAtIndex(value, LLVMAttributeFunctionIndex, nounwind_attr);
@@ -449,6 +464,50 @@ static void init_runtime(compile_t* c)
 #  endif
   LLVMSetReturnNoAlias(value);
   LLVMSetDereferenceableOrNull(value, 0, HEAP_MIN);
+#endif
+
+  // i8* pony_alloc_small_final(i8*, i32)
+  params[0] = c->void_ptr;
+  params[1] = c->i32;
+  type = LLVMFunctionType(c->void_ptr, params, 2, false);
+  value = LLVMAddFunction(c->module, "pony_alloc_small_final", type);
+#if PONY_LLVM >= 309
+  LLVMAddAttributeAtIndex(value, LLVMAttributeFunctionIndex, nounwind_attr);
+  LLVMAddAttributeAtIndex(value, LLVMAttributeFunctionIndex,
+    inacc_or_arg_mem_attr);
+  LLVMAddAttributeAtIndex(value, LLVMAttributeReturnIndex, noalias_attr);
+  LLVMAddAttributeAtIndex(value, LLVMAttributeReturnIndex,
+    deref_alloc_small_attr);
+  LLVMAddAttributeAtIndex(value, LLVMAttributeReturnIndex, align_heap_attr);
+#else
+  LLVMAddFunctionAttr(value, LLVMNoUnwindAttribute);
+#  if PONY_LLVM >= 308
+  LLVMSetInaccessibleMemOrArgMemOnly(value);
+#  endif
+  LLVMSetReturnNoAlias(value);
+  LLVMSetDereferenceable(value, 0, HEAP_MIN);
+#endif
+
+  // i8* pony_alloc_large_final(i8*, intptr)
+  params[0] = c->void_ptr;
+  params[1] = c->intptr;
+  type = LLVMFunctionType(c->void_ptr, params, 2, false);
+  value = LLVMAddFunction(c->module, "pony_alloc_large_final", type);
+#if PONY_LLVM >= 309
+  LLVMAddAttributeAtIndex(value, LLVMAttributeFunctionIndex, nounwind_attr);
+  LLVMAddAttributeAtIndex(value, LLVMAttributeFunctionIndex,
+    inacc_or_arg_mem_attr);
+  LLVMAddAttributeAtIndex(value, LLVMAttributeReturnIndex, noalias_attr);
+  LLVMAddAttributeAtIndex(value, LLVMAttributeReturnIndex,
+    deref_alloc_large_attr);
+  LLVMAddAttributeAtIndex(value, LLVMAttributeReturnIndex, align_heap_attr);
+#else
+  LLVMAddFunctionAttr(value, LLVMNoUnwindAttribute);
+#  if PONY_LLVM >= 308
+  LLVMSetInaccessibleMemOrArgMemOnly(value);
+#  endif
+  LLVMSetReturnNoAlias(value);
+  LLVMSetDereferenceable(value, 0, HEAP_MAX << 1);
 #endif
 
   // $message* pony_alloc_msg(i32, i32)
@@ -574,6 +633,16 @@ static void init_runtime(compile_t* c)
   params[0] = c->void_ptr;
   type = LLVMFunctionType(c->void_type, params, 1, false);
   value = LLVMAddFunction(c->module, "pony_recv_done", type);
+#if PONY_LLVM >= 309
+  LLVMAddAttributeAtIndex(value, LLVMAttributeFunctionIndex, nounwind_attr);
+#else
+  LLVMAddFunctionAttr(value, LLVMNoUnwindAttribute);
+#endif
+
+  // void pony_send_next(i8*)
+  params[0] = c->void_ptr;
+  type = LLVMFunctionType(c->void_type, params, 1, false);
+  value = LLVMAddFunction(c->module, "pony_send_next", type);
 #if PONY_LLVM >= 309
   LLVMAddAttributeAtIndex(value, LLVMAttributeFunctionIndex, nounwind_attr);
 #else
@@ -720,6 +789,26 @@ static void init_runtime(compile_t* c)
   // i32 pony_personality_v0(...)
   type = LLVMFunctionType(c->i32, NULL, 0, true);
   c->personality = LLVMAddFunction(c->module, "pony_personality_v0", type);
+
+  // i32 memcmp(i8*, i8*, intptr)
+  params[0] = c->void_ptr;
+  params[1] = c->void_ptr;
+  params[2] = c->intptr;
+  type = LLVMFunctionType(c->i32, params, 3, false);
+  value = LLVMAddFunction(c->module, "memcmp", type);
+#if PONY_LLVM >= 309
+  LLVMAddAttributeAtIndex(value, LLVMAttributeFunctionIndex, nounwind_attr);
+  LLVMAddAttributeAtIndex(value, LLVMAttributeFunctionIndex, readonly_attr);
+  LLVMAddAttributeAtIndex(value, 1, readonly_attr);
+  LLVMAddAttributeAtIndex(value, 2, readonly_attr);
+#else
+  LLVMAddFunctionAttr(value, LLVMNoUnwindAttribute);
+  LLVMAddFunctionAttr(value, LLVMReadOnlyAttribute);
+  LLVMValueRef param = LLVMGetParam(value, 0);
+  LLVMAddAttribute(param, LLVMReadOnlyAttribute);
+  param = LLVMGetParam(value, 1);
+  LLVMAddAttribute(param, LLVMReadOnlyAttribute);
+#endif
 }
 
 static bool init_module(compile_t* c, ast_t* program, pass_opt_t* opt)
@@ -923,6 +1012,8 @@ bool codegen(ast_t* program, pass_opt_t* opt)
   compile_t c;
   memset(&c, 0, sizeof(compile_t));
 
+  genned_strings_init(&c.strings, 64);
+
   if(!init_module(&c, program, opt))
     return false;
 
@@ -940,38 +1031,46 @@ bool codegen(ast_t* program, pass_opt_t* opt)
   return ok;
 }
 
-bool codegen_gen_test(compile_t* c, ast_t* program, pass_opt_t* opt)
+bool codegen_gen_test(compile_t* c, ast_t* program, pass_opt_t* opt,
+  pass_id last_pass)
 {
-  memset(c, 0, sizeof(compile_t));
+  if(last_pass < PASS_REACH)
+  {
+    memset(c, 0, sizeof(compile_t));
 
-  if(!init_module(c, program, opt))
-    return false;
+    genned_strings_init(&c->strings, 64);
 
-  init_runtime(c);
-  genprim_reachable_init(c, program);
+    if(!init_module(c, program, opt))
+      return false;
 
-  const char* main_actor = c->str_Main;
-  const char* env_class = c->str_Env;
+    init_runtime(c);
+    genprim_reachable_init(c, program);
 
-  ast_t* package = ast_child(program);
-  ast_t* main_def = ast_get(package, main_actor, NULL);
+    const char* main_actor = c->str_Main;
+    const char* env_class = c->str_Env;
 
-  if(main_def == NULL)
-    return false;
+    ast_t* package = ast_child(program);
+    ast_t* main_def = ast_get(package, main_actor, NULL);
 
-  ast_t* main_ast = type_builtin(opt, main_def, main_actor);
-  ast_t* env_ast = type_builtin(opt, main_def, env_class);
+    if(main_def == NULL)
+      return false;
 
-  if(lookup(opt, main_ast, main_ast, c->str_create) == NULL)
-    return false;
+    ast_t* main_ast = type_builtin(opt, main_def, main_actor);
+    ast_t* env_ast = type_builtin(opt, main_def, env_class);
 
-  reach(c->reach, main_ast, c->str_create, NULL, opt);
-  reach(c->reach, env_ast, c->str__create, NULL, opt);
+    if(lookup(opt, main_ast, main_ast, c->str_create) == NULL)
+      return false;
+
+    reach(c->reach, main_ast, c->str_create, NULL, opt);
+    reach(c->reach, env_ast, c->str__create, NULL, opt);
+    reach_done(c->reach, c->opt);
+  }
 
   if(opt->limit == PASS_REACH)
     return true;
 
-  paint(&c->reach->types);
+  if(last_pass < PASS_PAINT)
+    paint(&c->reach->types);
 
   if(opt->limit == PASS_PAINT)
     return true;
@@ -993,6 +1092,7 @@ void codegen_cleanup(compile_t* c)
   LLVMContextDispose(c->context);
   LLVMDisposeTargetMachine(c->machine);
   tbaa_metadatas_free(c->tbaa_mds);
+  genned_strings_destroy(&c->strings);
   reach_free(c->reach);
 }
 
@@ -1034,12 +1134,13 @@ LLVMValueRef codegen_addfun(compile_t* c, const char* name, LLVMTypeRef type)
 }
 
 void codegen_startfun(compile_t* c, LLVMValueRef fun, LLVMMetadataRef file,
-  LLVMMetadataRef scope)
+  LLVMMetadataRef scope, bool bare)
 {
   compile_frame_t* frame = push_frame(c);
 
   frame->fun = fun;
   frame->is_function = true;
+  frame->bare_function = bare;
   frame->di_file = file;
   frame->di_scope = scope;
 
@@ -1062,6 +1163,7 @@ void codegen_pushscope(compile_t* c, ast_t* ast)
   compile_frame_t* frame = push_frame(c);
 
   frame->fun = frame->prev->fun;
+  frame->bare_function = frame->prev->bare_function;
   frame->break_target = frame->prev->break_target;
   frame->break_novalue_target = frame->prev->break_novalue_target;
   frame->continue_target = frame->prev->continue_target;
@@ -1166,6 +1268,7 @@ void codegen_pushloop(compile_t* c, LLVMBasicBlockRef continue_target,
   compile_frame_t* frame = push_frame(c);
 
   frame->fun = frame->prev->fun;
+  frame->bare_function = frame->prev->bare_function;
   frame->break_target = break_target;
   frame->break_novalue_target = break_novalue_target;
   frame->continue_target = continue_target;
@@ -1184,6 +1287,7 @@ void codegen_pushtry(compile_t* c, LLVMBasicBlockRef invoke_target)
   compile_frame_t* frame = push_frame(c);
 
   frame->fun = frame->prev->fun;
+  frame->bare_function = frame->prev->bare_function;
   frame->break_target = frame->prev->break_target;
   frame->break_novalue_target = frame->prev->break_novalue_target;
   frame->continue_target = frame->prev->continue_target;
@@ -1288,10 +1392,13 @@ LLVMBasicBlockRef codegen_block(compile_t* c, const char* name)
 }
 
 LLVMValueRef codegen_call(compile_t* c, LLVMValueRef fun, LLVMValueRef* args,
-  size_t count)
+  size_t count, bool setcc)
 {
   LLVMValueRef result = LLVMBuildCall(c->builder, fun, args, (int)count, "");
-  LLVMSetInstructionCallConv(result, c->callconv);
+
+  if(setcc)
+    LLVMSetInstructionCallConv(result, c->callconv);
+
   return result;
 }
 

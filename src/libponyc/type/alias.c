@@ -218,9 +218,11 @@ ast_t* alias(ast_t* type)
     }
 
     case TK_LAMBDATYPE:
+    case TK_BARELAMBDATYPE:
     case TK_FUNTYPE:
     case TK_INFERTYPE:
     case TK_ERRORTYPE:
+    case TK_DONTCARETYPE:
       return type;
 
     default: {}

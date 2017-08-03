@@ -9,25 +9,17 @@ else
   ifeq ($(UNAME_S),Linux)
     OSTYPE = linux
 
-    ifneq (,$(shell which gcc-ar 2> /dev/null))
-      AR = gcc-ar
+    ifndef AR
+      ifneq (,$(shell which gcc-ar 2> /dev/null))
+        AR = gcc-ar
+      endif
     endif
+
+    ALPINE=$(wildcard /etc/alpine-release)
   endif
 
   ifeq ($(UNAME_S),Darwin)
     OSTYPE = osx
-    ifneq (,$(shell which llvm-ar-mp-3.8 2> /dev/null))
-      AR := llvm-ar-mp-3.8
-      AR_FLAGS := rcs
-    else
-      ifneq (,$(shell which llvm-ar-3.8 2> /dev/null))
-        AR := llvm-ar-3.8
-        AR_FLAGS := rcs
-      else
-        AR := /usr/bin/ar
-	AR_FLAGS := -rcs
-      endif
-    endif
   endif
 
   ifeq ($(UNAME_S),FreeBSD)
@@ -50,6 +42,7 @@ endif
 # Default settings (silent release build).
 config ?= release
 arch ?= native
+tune ?= generic
 bits ?= $(shell getconf LONG_BIT)
 
 ifndef verbose
@@ -67,8 +60,7 @@ endif
 # package_name, _version, and _iteration can be overridden by Travis or AppVeyor
 package_base_version ?= $(tag)
 package_iteration ?= "1"
-package_name ?= "ponyc-unknown"
-package_conflicts ?= "ponyc-release"
+package_name ?= "ponyc"
 package_version = $(package_base_version)-$(package_iteration)
 archive = $(package_name)-$(package_version).tar
 package = build/$(package_name)-$(package_version)
@@ -91,9 +83,9 @@ prefix ?= /usr/local
 destdir ?= $(prefix)/lib/pony/$(tag)
 
 LIB_EXT ?= a
-BUILD_FLAGS = -march=$(arch) -Werror -Wconversion \
+BUILD_FLAGS = -march=$(arch) -mtune=$(tune) -Werror -Wconversion \
   -Wno-sign-conversion -Wextra -Wall
-LINKER_FLAGS = -march=$(arch)
+LINKER_FLAGS = -march=$(arch) -mtune=$(tune)
 AR_FLAGS ?= rcs
 ALL_CFLAGS = -std=gnu11 -fexceptions \
   -DPONY_VERSION=\"$(tag)\" -DLLVM_VERSION=\"$(llvm_version)\" \
@@ -105,10 +97,13 @@ ALL_CXXFLAGS = -std=gnu++11 -fno-rtti
 
 # Determine pointer size in bits.
 BITS := $(bits)
+UNAME_M := $(shell uname -m)
 
 ifeq ($(BITS),64)
-  BUILD_FLAGS += -mcx16
-  LINKER_FLAGS += -mcx16
+  ifneq ($(UNAME_M),aarch64)
+    BUILD_FLAGS += -mcx16
+    LINKER_FLAGS += -mcx16
+  endif
 endif
 
 PONY_BUILD_DIR   ?= build/$(config)
@@ -169,7 +164,11 @@ ifeq ($(OSTYPE),osx)
 endif
 
 ifndef LLVM_CONFIG
-  ifneq (,$(shell which llvm-config-3.9 2> /dev/null))
+	ifneq (,$(shell which /usr/local/opt/llvm@3.9/bin/llvm-config 2> /dev/null))
+    LLVM_CONFIG = /usr/local/opt/llvm@3.9/bin/llvm-config
+    LLVM_LINK = /usr/local/opt/llvm@3.9/bin/llvm-link
+    LLVM_OPT = /usr/local/opt/llvm@3.9/bin/opt
+  else ifneq (,$(shell which llvm-config-3.9 2> /dev/null))
     LLVM_CONFIG = llvm-config-3.9
     LLVM_LINK = llvm-link-3.9
     LLVM_OPT = opt-3.9
@@ -217,6 +216,24 @@ ifndef LLVM_CONFIG
 endif
 
 llvm_version := $(shell $(LLVM_CONFIG) --version)
+
+ifeq ($(OSTYPE),osx)
+	llvm_bindir := $(shell $(LLVM_CONFIG) --bindir)
+
+  ifneq (,$(shell which $(llvm_bindir)/llvm-ar 2> /dev/null))
+    AR = $(llvm_bindir)/llvm-ar
+    AR_FLAGS := rcs
+  else ifneq (,$(shell which llvm-ar-mp-3.8 2> /dev/null))
+    AR = llvm-ar-mp-3.8
+    AR_FLAGS := rcs
+  else ifneq (,$(shell which llvm-ar-3.8 2> /dev/null))
+    AR = llvm-ar-3.8
+    AR_FLAGS := rcs
+  else
+    AR = /usr/bin/ar
+		AR_FLAGS := -rcs
+  endif
+endif
 
 ifeq ($(llvm_version),3.7.1)
 else ifeq ($(llvm_version),3.8.1)
@@ -319,7 +336,7 @@ endif
 # (4) a list of the libraries to link against
 llvm.ldflags := $(shell $(LLVM_CONFIG) --ldflags)
 llvm.include.dir := $(shell $(LLVM_CONFIG) --includedir)
-include.paths := $(shell echo | cc -v -E - 2>&1)
+include.paths := $(shell echo | $(CC) -v -E - 2>&1)
 ifeq (,$(findstring $(llvm.include.dir),$(include.paths)))
 # LLVM include directory is not in the existing paths;
 # put it at the top of the system list
@@ -332,7 +349,7 @@ endif
 llvm.libs    := $(shell $(LLVM_CONFIG) --libs) -lz -lncurses
 
 ifeq ($(OSTYPE), freebsd)
-  llvm.libs += -lpthread
+  llvm.libs += -lpthread -lexecinfo
 endif
 
 prebuilt := llvm
@@ -362,8 +379,8 @@ libponycc.include := -I src/common/ $(llvm.include)
 libponyrt.include := -I src/common/ -I src/libponyrt/
 libponyrt-pic.include := $(libponyrt.include)
 
-libponyc.tests.include := -I src/common/ -I src/libponyc/ $(llvm.include) \
-  -isystem lib/gtest/
+libponyc.tests.include := -I src/common/ -I src/libponyc/ -I src/libponyrt \
+  $(llvm.include) -isystem lib/gtest/
 libponyrt.tests.include := -I src/common/ -I src/libponyrt/ -isystem lib/gtest/
 
 libponyc.benchmarks.include := -I src/common/ -I src/libponyc/ \
@@ -381,6 +398,13 @@ endif
 
 # target specific build options
 libponyrt.buildoptions = -DPONY_NO_ASSERT
+libponyrt-pic.buildoptions = -DPONY_NO_ASSERT
+
+libponyrt.tests.linkoptions += -rdynamic
+
+ifneq ($(ALPINE),)
+  libponyrt.tests.linkoptions += -lexecinfo
+endif
 
 libponyc.buildoptions = -D__STDC_CONSTANT_MACROS
 libponyc.buildoptions += -D__STDC_FORMAT_MACROS
@@ -393,18 +417,37 @@ libponyc.tests.buildoptions += -DPONY_PACKAGES_DIR=\"$(packages_abs_src)\"
 
 libponyc.tests.linkoptions += -rdynamic
 
+ifneq ($(ALPINE),)
+  libponyc.tests.linkoptions += -lexecinfo
+endif
+
 libponyc.benchmarks.buildoptions = -D__STDC_CONSTANT_MACROS
 libponyc.benchmarks.buildoptions += -D__STDC_FORMAT_MACROS
 libponyc.benchmarks.buildoptions += -D__STDC_LIMIT_MACROS
 
 libgbenchmark.buildoptions := -DHAVE_POSIX_REGEX
 
+ifneq ($(ALPINE),)
+  libponyc.benchmarks.linkoptions += -lexecinfo
+  libponyrt.benchmarks.linkoptions += -lexecinfo
+endif
+
 ponyc.buildoptions = $(libponyc.buildoptions)
 
 ponyc.linkoptions += -rdynamic
 
+ifneq ($(ALPINE),)
+  ponyc.linkoptions += -lexecinfo
+endif
+
 ifeq ($(OSTYPE), linux)
   libponyrt-pic.buildoptions += -fpic
+endif
+
+# default enable PIC compiling if requested
+ifdef default_pic
+  libponyrt.buildoptions += -fpic
+  BUILD_FLAGS += -DPONY_DEFAULT_PIC=true
 endif
 
 # target specific disabling of build options
@@ -425,6 +468,13 @@ ifeq ($(OSTYPE),linux)
   libponyrt.tests.links += libpthread libdl
   libponyc.benchmarks.links += libpthread libdl
   libponyrt.benchmarks.links += libpthread libdl
+endif
+
+ifeq ($(OSTYPE),freebsd)
+  libponyc.tests.links += libpthread
+  libponyrt.tests.links += libpthread
+  libponyc.benchmarks.links += libpthread
+  libponyrt.benchmarks.links += libpthread
 endif
 
 ifneq (, $(DTRACE))
@@ -560,8 +610,8 @@ define CONFIGURE_LINKER
     linker := $(CXX)
   endif
 
-  $(foreach lk,$($(1).links),$(eval $(call CONFIGURE_LIBS,$(lk))))
   $(eval $(call CONFIGURE_LINKER_WHOLE,$(1)))
+  $(foreach lk,$($(1).links),$(eval $(call CONFIGURE_LIBS,$(lk))))
   linkcmd += $(libs) $($(1).linkoptions)
 endef
 
@@ -752,52 +802,58 @@ test-ci: all
 	@PONYPATH=. $(PONY_BUILD_DIR)/ponyc -d -s examples
 	@./examples1
 	@rm examples1
+	@$(PONY_BUILD_DIR)/ponyc --antlr > pony.g.new
+	@diff pony.g pony.g.new
+	@rm pony.g.new
+
+docs: all
+	$(SILENT)$(PONY_BUILD_DIR)/ponyc packages/stdlib --docs --pass expr
+	$(SILENT)cp .docs/extra.js stdlib-docs/docs/
+	$(SILENT)sed -i 's/site_name:\ stdlib/site_name:\ Pony Standard Library/' stdlib-docs/mkdocs.yml
 
 # Note: linux only
-# FIXME: why is $(branch) empty?
 define EXPAND_DEPLOY
-deploy: test
-	$(SILENT)sh .bintray.sh debian "$(package_version)" "$(package_name)"
-	$(SILENT)sh .bintray.sh rpm    "$(package_version)" "$(package_name)"
-	$(SILENT)sh .bintray.sh source "$(package_version)" "$(package_name)"
-	@mkdir build/bin
+deploy: test docs
+	$(SILENT)bash .bintray.bash debian "$(package_version)" "$(package_name)"
+	$(SILENT)bash .bintray.bash rpm    "$(package_version)" "$(package_name)"
+	$(SILENT)bash .bintray.bash source "$(package_version)" "$(package_name)"
+	$(SILENT)rm -rf build/bin
+	@mkdir -p build/bin
 	@mkdir -p $(package)/usr/bin
 	@mkdir -p $(package)/usr/include/pony/detail
 	@mkdir -p $(package)/usr/lib
 	@mkdir -p $(package)/usr/lib/pony/$(package_version)/bin
 	@mkdir -p $(package)/usr/lib/pony/$(package_version)/include/pony/detail
 	@mkdir -p $(package)/usr/lib/pony/$(package_version)/lib
-	$(SILENT)cp build/release/libponyc.a $(package)/usr/lib/pony/$(package_version)/lib
-	$(SILENT)cp build/release/libponyrt.a $(package)/usr/lib/pony/$(package_version)/lib
+	$(SILENT)cp $(PONY_BUILD_DIR)/libponyc.a $(package)/usr/lib/pony/$(package_version)/lib
+	$(SILENT)cp $(PONY_BUILD_DIR)/libponyrt.a $(package)/usr/lib/pony/$(package_version)/lib
 ifeq ($(OSTYPE),linux)
-	$(SILENT)cp build/release/libponyrt-pic.a $(package)/usr/lib/pony/$(package_version)/lib
+	$(SILENT)cp $(PONY_BUILD_DIR)/libponyrt-pic.a $(package)/usr/lib/pony/$(package_version)/lib
 endif
-ifneq ($(wildcard build/release/libponyrt.bc),)
-	$(SILENT)cp build/release/libponyrt.bc $(package)/usr/lib/pony/$(package_version)/lib
+ifneq ($(wildcard $(PONY_BUILD_DIR)/libponyrt.bc),)
+	$(SILENT)cp $(PONY_BUILD_DIR)/libponyrt.bc $(package)/usr/lib/pony/$(package_version)/lib
 endif
-	$(SILENT)cp build/release/ponyc $(package)/usr/lib/pony/$(package_version)/bin
+	$(SILENT)cp $(PONY_BUILD_DIR)/ponyc $(package)/usr/lib/pony/$(package_version)/bin
 	$(SILENT)cp src/libponyrt/pony.h $(package)/usr/lib/pony/$(package_version)/include
 	$(SILENT)cp src/common/pony/detail/atomics.h $(package)/usr/lib/pony/$(package_version)/include/pony/detail
-	$(SILENT)ln -s /usr/lib/pony/$(package_version)/lib/libponyrt.a $(package)/usr/lib/libponyrt.a
+	$(SILENT)ln -f -s /usr/lib/pony/$(package_version)/lib/libponyrt.a $(package)/usr/lib/libponyrt.a
 ifeq ($(OSTYPE),linux)
-	$(SILENT)ln -s /usr/lib/pony/$(package_version)/lib/libponyrt-pic.a $(package)/usr/lib/libponyrt-pic.a
+	$(SILENT)ln -f -s /usr/lib/pony/$(package_version)/lib/libponyrt-pic.a $(package)/usr/lib/libponyrt-pic.a
 endif
 ifneq ($(wildcard /usr/lib/pony/$(package_version)/lib/libponyrt.bc),)
-	$(SILENT)ln -s /usr/lib/pony/$(package_version)/lib/libponyrt.bc $(package)/usr/lib/libponyrt.bc
+	$(SILENT)ln -f -s /usr/lib/pony/$(package_version)/lib/libponyrt.bc $(package)/usr/lib/libponyrt.bc
 endif
-	$(SILENT)ln -s /usr/lib/pony/$(package_version)/lib/libponyc.a $(package)/usr/lib/libponyc.a
-	$(SILENT)ln -s /usr/lib/pony/$(package_version)/bin/ponyc $(package)/usr/bin/ponyc
-	$(SILENT)ln -s /usr/lib/pony/$(package_version)/include/pony.h $(package)/usr/include/pony.h
-	$(SILENT)ln -s /usr/lib/pony/$(package_version)/include/pony/detail/atomics.h $(package)/usr/include/pony/detail/atomics.h
+	$(SILENT)ln -f -s /usr/lib/pony/$(package_version)/lib/libponyc.a $(package)/usr/lib/libponyc.a
+	$(SILENT)ln -f -s /usr/lib/pony/$(package_version)/bin/ponyc $(package)/usr/bin/ponyc
+	$(SILENT)ln -f -s /usr/lib/pony/$(package_version)/include/pony.h $(package)/usr/include/pony.h
+	$(SILENT)ln -f -s /usr/lib/pony/$(package_version)/include/pony/detail/atomics.h $(package)/usr/include/pony/detail/atomics.h
 	$(SILENT)cp -r packages $(package)/usr/lib/pony/$(package_version)/
-	$(SILENT)build/release/ponyc packages/stdlib -rexpr -g -o $(package)/usr/lib/pony/$(package_version)
-	$(SILENT)fpm -s dir -t deb -C $(package) -p build/bin --name $(package_name) --conflicts $(package_conflicts) --version $(package_base_version) --iteration "$(package_iteration)" --description "The Pony Compiler"
-	$(SILENT)fpm -s dir -t rpm -C $(package) -p build/bin --name $(package_name) --conflicts $(package_conflicts) --version $(package_base_version) --iteration "$(package_iteration)" --description "The Pony Compiler"
+	$(SILENT)fpm -s dir -t deb -C $(package) -p build/bin --name $(package_name) --conflicts "ponyc-master" --conflicts "ponyc-release" --version $(package_base_version) --iteration "$(package_iteration)" --description "The Pony Compiler" --provides "ponyc" --provides "ponyc-release"
+	$(SILENT)fpm -s dir -t rpm -C $(package) -p build/bin --name $(package_name) --conflicts "ponyc-master" --conflicts "ponyc-release" --version $(package_base_version) --iteration "$(package_iteration)" --description "The Pony Compiler" --provides "ponyc" --provides "ponyc-release" --depends "ponydep-ncurses"
 	$(SILENT)git archive HEAD > build/bin/$(archive)
-	$(SILENT)cp -r $(package)/usr/lib/pony/$(package_version)/stdlib-docs stdlib-docs
 	$(SILENT)tar rvf build/bin/$(archive) stdlib-docs
 	$(SILENT)bzip2 build/bin/$(archive)
-	$(SILENT)rm -rf $(package) build/bin/$(archive) stdlib-docs
+	$(SILENT)rm -rf $(package) build/bin/$(archive)
 endef
 
 $(eval $(call EXPAND_DEPLOY))
@@ -818,6 +874,9 @@ stats:
 
 clean:
 	@rm -rf $(PONY_BUILD_DIR)
+	@rm -rf $(package)
+	@rm -rf build/bin
+	@rm -rf stdlib-docs
 	@rm -f src/common/dtrace_probes.h
 	-@rmdir build 2>/dev/null ||:
 	@echo 'Repository cleaned ($(PONY_BUILD_DIR)).'

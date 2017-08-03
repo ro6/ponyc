@@ -4,6 +4,7 @@
 
 #include "../actor/messageq.h"
 #include "../mem/pool.h"
+#include "../sched/cpu.h"
 #include "ponyassert.h"
 #include <sys/event.h>
 #include <string.h>
@@ -120,6 +121,7 @@ PONY_API void pony_asio_event_resubscribe_write(asio_event_t* ev)
 
 DECLARE_THREAD_FN(ponyint_asio_backend_dispatch)
 {
+  ponyint_cpu_affinity(ponyint_asio_get_cpu());
   pony_register_thread();
   asio_backend_t* b = arg;
   struct kevent fired[MAX_EVENTS];
@@ -187,6 +189,7 @@ DECLARE_THREAD_FN(ponyint_asio_backend_dispatch)
 
   ponyint_messageq_destroy(&b->q);
   POOL_FREE(asio_backend_t, b);
+  pony_unregister_thread();
   return NULL;
 }
 

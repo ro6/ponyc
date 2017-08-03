@@ -1,10 +1,11 @@
 #include "genmatch.h"
+#include "gencall.h"
+#include "gencontrol.h"
 #include "gendesc.h"
+#include "genfun.h"
 #include "genexpr.h"
 #include "genoperator.h"
 #include "genreference.h"
-#include "gencall.h"
-#include "gencontrol.h"
 #include "../pass/expr.h"
 #include "../type/subtype.h"
 #include "../type/matchtype.h"
@@ -52,6 +53,9 @@ static bool check_nominal(compile_t* c, LLVMValueRef desc, ast_t* pattern_type,
     return false;
 
   LLVMBasicBlockRef continue_block = codegen_block(c, "pattern_continue");
+  if(next_block == NULL)
+    next_block = continue_block;
+
   LLVMValueRef br = LLVMBuildCondBr(c->builder, test, continue_block,
     next_block);
 
@@ -89,6 +93,9 @@ static void check_cardinality(compile_t* c, LLVMValueRef desc, size_t size,
     "");
 
   LLVMBasicBlockRef continue_block = codegen_block(c, "pattern_continue");
+  if(next_block == NULL)
+    next_block = continue_block;
+
   LLVMBuildCondBr(c->builder, test, continue_block, next_block);
   LLVMPositionBuilderAtEnd(c->builder, continue_block);
 }
@@ -133,6 +140,7 @@ static bool check_tuple(compile_t* c, LLVMValueRef ptr, LLVMValueRef desc,
     LLVMBuildBr(c->builder, continue_block);
 
     // Continue with the pointer and descriptor.
+    LLVMMoveBasicBlockAfter(nonnull_block, LLVMGetInsertBlock(c->builder));
     LLVMPositionBuilderAtEnd(c->builder, nonnull_block);
 
     if(!check_type(c, field_ptr, field_desc, pattern_child, next_block,
@@ -142,6 +150,7 @@ static bool check_tuple(compile_t* c, LLVMValueRef ptr, LLVMValueRef desc,
     LLVMBuildBr(c->builder, continue_block);
 
     // Merge the two branches.
+    LLVMMoveBasicBlockAfter(continue_block, LLVMGetInsertBlock(c->builder));
     LLVMPositionBuilderAtEnd(c->builder, continue_block);
     pattern_child = ast_sibling(pattern_child);
   }
@@ -168,6 +177,9 @@ static bool check_union(compile_t* c, LLVMValueRef ptr, LLVMValueRef desc,
     else
       nomatch_block = next_block;
 
+    if(nomatch_block == NULL)
+      nomatch_block = continue_block;
+
     if(!check_type(c, ptr, desc, child, nomatch_block, weight))
       return false;
 
@@ -175,11 +187,13 @@ static bool check_union(compile_t* c, LLVMValueRef ptr, LLVMValueRef desc,
     LLVMBuildBr(c->builder, continue_block);
 
     // Put the next union check, if there is one, in the nomatch block.
+    LLVMMoveBasicBlockAfter(nomatch_block, LLVMGetInsertBlock(c->builder));
     LLVMPositionBuilderAtEnd(c->builder, nomatch_block);
     child = next_type;
   }
 
   // Continue codegen in the continue block, not in the next block.
+  LLVMMoveBasicBlockAfter(continue_block, LLVMGetInsertBlock(c->builder));
   LLVMPositionBuilderAtEnd(c->builder, continue_block);
   return true;
 }
@@ -239,7 +253,8 @@ static bool check_value(compile_t* c, ast_t* pattern, ast_t* param_type,
   LLVMValueRef value, LLVMBasicBlockRef next_block)
 {
   reach_type_t* t = reach_type(c->reach, param_type);
-  LLVMValueRef r_value = gen_assign_cast(c, t->use_type, value, param_type);
+  LLVMValueRef r_value = gen_assign_cast(c,
+    ((compile_type_t*)t->c_type)->use_type, value, param_type);
 
   if(r_value == NULL)
     return false;
@@ -250,6 +265,9 @@ static bool check_value(compile_t* c, ast_t* pattern, ast_t* param_type,
     return false;
 
   LLVMBasicBlockRef continue_block = codegen_block(c, "pattern_continue");
+  if(next_block == NULL)
+    next_block = continue_block;
+
   LLVMValueRef test = LLVMBuildTrunc(c->builder, result, c->i1, "");
   LLVMValueRef br = LLVMBuildCondBr(c->builder, test, continue_block,
     next_block);
@@ -304,6 +322,7 @@ static bool dynamic_tuple_element(compile_t* c, LLVMValueRef ptr,
   LLVMBuildBr(c->builder, continue_block);
 
   // Continue with the pointer and descriptor.
+  LLVMMoveBasicBlockAfter(nonnull_block, LLVMGetInsertBlock(c->builder));
   LLVMPositionBuilderAtEnd(c->builder, nonnull_block);
 
   if(!dynamic_match_ptr(c, field_ptr, field_desc, pattern, next_block))
@@ -312,6 +331,7 @@ static bool dynamic_tuple_element(compile_t* c, LLVMValueRef ptr,
   LLVMBuildBr(c->builder, continue_block);
 
   // Merge the two branches.
+  LLVMMoveBasicBlockAfter(continue_block, LLVMGetInsertBlock(c->builder));
   LLVMPositionBuilderAtEnd(c->builder, continue_block);
   return true;
 }
@@ -367,7 +387,8 @@ static bool dynamic_value_ptr(compile_t* c, LLVMValueRef ptr,
   // dynamic_match_object(). We also know it isn't an unboxed tuple. We can
   // load from ptr with a type based on the static type of the pattern.
   reach_type_t* t = reach_type(c->reach, param_type);
-  LLVMTypeRef ptr_type = LLVMPointerType(t->use_type, 0);
+  LLVMTypeRef ptr_type = LLVMPointerType(((compile_type_t*)t->c_type)->use_type,
+    0);
   ptr = LLVMBuildBitCast(c->builder, ptr, ptr_type, "");
   LLVMValueRef value = LLVMBuildLoad(c->builder, ptr, "");
 
@@ -400,7 +421,8 @@ static bool dynamic_capture_ptr(compile_t* c, LLVMValueRef ptr,
   // path, ie dynamic_match_object(). We also know it isn't an unboxed tuple.
   // We can load from ptr with a type based on the static type of the pattern.
   reach_type_t* t = reach_type(c->reach, pattern_type);
-  LLVMTypeRef ptr_type = LLVMPointerType(t->use_type, 0);
+  LLVMTypeRef ptr_type = LLVMPointerType(((compile_type_t*)t->c_type)->use_type,
+    0);
   ptr = LLVMBuildBitCast(c->builder, ptr, ptr_type, "");
   LLVMValueRef value = LLVMBuildLoad(c->builder, ptr, "");
 
@@ -691,6 +713,9 @@ static bool guard_match(compile_t* c, ast_t* guard,
     return false;
 
   LLVMBasicBlockRef continue_block = codegen_block(c, "pattern_continue");
+  if(next_block == NULL)
+    next_block = continue_block;
+
   LLVMValueRef test = LLVMBuildTrunc(c->builder, value, c->i1, "");
   LLVMBuildCondBr(c->builder, test, continue_block, next_block);
   LLVMPositionBuilderAtEnd(c->builder, continue_block);
@@ -729,20 +754,20 @@ LLVMValueRef gen_match(compile_t* c, ast_t* ast)
   ast_t* type = ast_type(ast);
   AST_GET_CHILDREN(ast, match_expr, cases, else_expr);
 
-  // We will have no type if all case have control types.
+  // We will have no type if all cases jump away.
   LLVMTypeRef phi_type = NULL;
 
-  if(needed && !is_control_type(type))
+  if(needed && !ast_checkflag(ast, AST_FLAG_JUMPS_AWAY))
   {
     reach_type_t* t_phi = reach_type(c->reach, type);
-    phi_type = t_phi->use_type;
+    phi_type = ((compile_type_t*)t_phi->c_type)->use_type;
   }
 
   ast_t* match_type = alias(ast_type(match_expr));
   LLVMValueRef match_value = gen_expr(c, match_expr);
 
   LLVMBasicBlockRef pattern_block = codegen_block(c, "case_pattern");
-  LLVMBasicBlockRef else_block = codegen_block(c, "match_else");
+  LLVMBasicBlockRef else_block = NULL;
   LLVMBasicBlockRef post_block = NULL;
   LLVMBasicBlockRef next_block = NULL;
 
@@ -751,7 +776,7 @@ LLVMValueRef gen_match(compile_t* c, ast_t* ast)
 
   LLVMValueRef phi = GEN_NOVALUE;
 
-  if(!is_control_type(type))
+  if(!ast_checkflag(ast, AST_FLAG_JUMPS_AWAY))
   {
     // Start the post block so that a case can modify the phi node.
     post_block = codegen_block(c, "match_post");
@@ -762,6 +787,11 @@ LLVMValueRef gen_match(compile_t* c, ast_t* ast)
     else
       phi = GEN_NOTNEEDED;
   }
+
+  // Create else block only if this isn't an exhaustive match
+  // (a match with no else expression).
+  if(ast_id(else_expr) != TK_NONE)
+    else_block = codegen_block(c, "match_else");
 
   // Iterate over the cases.
   ast_t* the_case = ast_child(cases);
@@ -795,6 +825,9 @@ LLVMValueRef gen_match(compile_t* c, ast_t* ast)
 
       // Case body.
       ok = ok && case_body(c, body, post_block, phi, phi_type);
+
+      if(next_block != NULL)
+        LLVMMoveBasicBlockAfter(next_block, LLVMGetInsertBlock(c->builder));
     }
 
     codegen_popscope(c);
@@ -812,17 +845,24 @@ LLVMValueRef gen_match(compile_t* c, ast_t* ast)
   ast_free_unattached(match_type);
 
   // Else body.
-  LLVMPositionBuilderAtEnd(c->builder, else_block);
-  codegen_pushscope(c, else_expr);
-  bool ok = case_body(c, else_expr, post_block, phi, phi_type);
-  codegen_scope_lifetime_end(c);
-  codegen_popscope(c);
+  if(else_block != NULL)
+  {
+    LLVMMoveBasicBlockAfter(else_block, LLVMGetInsertBlock(c->builder));
+    LLVMPositionBuilderAtEnd(c->builder, else_block);
+    codegen_pushscope(c, else_expr);
+    bool ok = case_body(c, else_expr, post_block, phi, phi_type);
+    codegen_scope_lifetime_end(c);
+    codegen_popscope(c);
 
-  if(!ok)
-    return NULL;
+    if(!ok)
+      return NULL;
+  }
 
   if(post_block != NULL)
+  {
+    LLVMMoveBasicBlockAfter(post_block, LLVMGetInsertBlock(c->builder));
     LLVMPositionBuilderAtEnd(c->builder, post_block);
+  }
 
   return phi;
 }

@@ -133,12 +133,12 @@ RULE(compile_error,
   TK_COMPILE_ERROR);
 
 GROUP(expr,
-  local, infix, asop, tuple, consume, recover, prefix, dot, tilde,
-  qualify, call, ffi_call, match_capture,
+  local, infix, isop, assignop, asop, tuple, consume, recover, prefix, dot,
+  tilde, qualify, call, ffi_call, match_capture,
   if_expr, ifdef, whileloop, repeat, for_loop, with, match, try_expr, lambda,
   array_literal, object_literal, int_literal, float_literal, string,
   bool_literal, id, rawseq, package_ref, location,
-  this_ref, ref, fun_ref, type_ref, flet_ref, field_ref, local_ref);
+  this_ref, ref, fun_ref, type_ref, field_ref, tuple_elem_ref, local_ref);
 
 RULE(local,
   HAS_TYPE(type)
@@ -154,16 +154,27 @@ RULE(match_capture,
 
 RULE(infix,
   HAS_TYPE(type)
-  // RHS first for TK_ASSIGN, to handle init tracking
-  // LHS first for all others
   CHILD(expr)
-  CHILD(expr),
+  CHILD(expr)
+  CHILD(question, none),
   TK_PLUS, TK_MINUS, TK_MULTIPLY, TK_DIVIDE, TK_MOD, TK_LSHIFT, TK_RSHIFT,
   TK_PLUS_TILDE, TK_MINUS_TILDE, TK_MULTIPLY_TILDE, TK_DIVIDE_TILDE,
   TK_MOD_TILDE, TK_LSHIFT_TILDE, TK_RSHIFT_TILDE,
   TK_EQ, TK_NE, TK_LT, TK_LE, TK_GT, TK_GE, TK_IS, TK_ISNT,
   TK_EQ_TILDE, TK_NE_TILDE, TK_LT_TILDE, TK_LE_TILDE, TK_GT_TILDE, TK_GE_TILDE,
-  TK_AND, TK_OR, TK_XOR, TK_ASSIGN);
+  TK_AND, TK_OR, TK_XOR);
+
+RULE(isop,
+  HAS_TYPE(type)
+  CHILD(expr)
+  CHILD(expr),
+  TK_IS, TK_ISNT);
+
+RULE(assignop,
+  HAS_TYPE(type)
+  CHILD(expr) // RHS first to handle init tracking
+  CHILD(expr),
+  TK_ASSIGN);
 
 RULE(asop,
   HAS_TYPE(type)
@@ -214,6 +225,7 @@ RULE(call,
   HAS_TYPE(type)
   CHILD(positional_args, none)
   CHILD(named_args, none)
+  CHILD(question, none)
   CHILD(expr),  // Note that receiver comes last
   TK_CALL);
 
@@ -380,21 +392,22 @@ RULE(fun_ref,
 
 RULE(type_ref,
   HAS_TYPE(type)
-  CHILD(expr)
-  OPTIONAL(id, type_args),
+  CHILD(package_ref, none)
+  CHILD(id, none)
+  CHILD(type_args, none),
   TK_TYPEREF);
 
 RULE(field_ref,
   HAS_TYPE(type)
   CHILD(expr)
   CHILD(id),
-  TK_FVARREF, TK_EMBEDREF);
+  TK_FVARREF, TK_FLETREF, TK_EMBEDREF);
 
-RULE(flet_ref,
+RULE(tuple_elem_ref,
   HAS_TYPE(type)
   CHILD(expr)
-  CHILD(id, int_literal), // Int for tuple element access
-  TK_FLETREF);
+  CHILD(int_literal),
+  TK_TUPLEELEMREF);
 
 RULE(local_ref,
   HAS_TYPE(type)

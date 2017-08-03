@@ -600,7 +600,7 @@ TEST_F(SugarTest, ForWithoutElse)
     "    let $1 = (1)\n"
     "    while $1.has_next() do\n"
     "      let i = $try_no_check\n"
-    "        $1.next()\n"
+    "        $1.next()?\n"
     "      else\n"
     "        break\n"
     "      then\n"
@@ -631,7 +631,7 @@ TEST_F(SugarTest, ForWithElse)
     "    let $1 = (1)\n"
     "    while $1.has_next() do\n"
     "      let i = $try_no_check\n"
-    "        $1.next()\n"
+    "        $1.next()?\n"
     "      else\n"
     "        break\n"
     "      then\n"
@@ -662,7 +662,7 @@ TEST_F(SugarTest, MultiIteratorFor)
     "    let $1 = (1)\n"
     "    while $1.has_next() do\n"
     "      (let i, let j) = $try_no_check\n"
-    "        $1.next()\n"
+    "        $1.next()?\n"
     "      else\n"
     "        break\n"
     "      then\n"
@@ -946,8 +946,6 @@ TEST_F(SugarTest, MatchWithNoElse)
     "  fun box f(): U32 val =>\n"
     "    match(x)\n"
     "    |1 => 2\n"
-    "    else\n"
-    "      None\n"
     "    end";
 
   TEST_EQUIV(short_form, full_form);
@@ -1345,304 +1343,6 @@ TEST_F(SugarTest, Ge)
     "    1.ge(2)";
 
   TEST_EQUIV(short_form, full_form);
-}
-
-
-TEST_F(SugarTest, As)
-{
-  const char* short_form =
-    "class Foo\n"
-    "  var create: U32\n"
-    "  fun f(a: (Foo | Bar)): Foo ? =>\n"
-    "    a as Foo ref";
-
-  const char* full_form =
-    "use \"builtin\"\n"
-    "class ref Foo\n"
-    "  var create: U32\n"
-    "  fun box f(a: (Foo | Bar)): Foo ? =>\n"
-    "    match a\n"
-    "    | $let $1: Foo ref => consume $aliased $1\n"
-    "    else\n"
-    "      error\n"
-    "    end";
-
-  TEST_EQUIV(short_form, full_form);
-}
-
-
-TEST_F(SugarTest, AsTuple)
-{
-  const char* short_form =
-    "class Foo\n"
-    "  var create: U32\n"
-    "  fun f(a: (Foo, Bar)): (Foo, Bar) ? =>\n"
-    "    a as (Foo ref, Bar ref)";
-
-  const char* full_form =
-    "use \"builtin\"\n"
-    "class ref Foo\n"
-    "  var create: U32\n"
-    "  fun box f(a: (Foo, Bar)): (Foo, Bar) ? =>\n"
-    "    match a\n"
-    "    | ($let $1: Foo ref, $let $2: Bar ref) =>\n"
-    "      (consume $aliased $1, consume $aliased $2)\n"
-    "    else\n"
-    "      error\n"
-    "    end";
-
-  TEST_EQUIV(short_form, full_form);
-}
-
-
-TEST_F(SugarTest, AsNestedTuple)
-{
-  const char* short_form =
-    "class Foo\n"
-    "  var create: U32\n"
-    "  fun f(a: (Foo, (Bar, Baz))): (Foo, (Bar, Baz)) ? =>\n"
-    "    a as (Foo ref, (Bar ref, Baz ref))";
-
-  const char* full_form =
-    "use \"builtin\"\n"
-    "class ref Foo\n"
-    "  var create: U32\n"
-    "  fun box f(a: (Foo, (Bar, Baz))): (Foo, (Bar, Baz)) ? =>\n"
-    "    match a\n"
-    "    | ($let $1: Foo ref, ($let $2: Bar ref, $let $3: Baz ref)) =>\n"
-    "      (consume $aliased $1,\n"
-    "        (consume $aliased $2, consume $aliased $3))\n"
-    "    else\n"
-    "      error\n"
-    "    end";
-
-  TEST_EQUIV(short_form, full_form);
-}
-
-
-TEST_F(SugarTest, AsDontCare)
-{
-  const char* short_form =
-    "class Foo\n"
-    "  fun f(a: Foo): Foo ? =>\n"
-    "    a as (_)";
-
-  TEST_ERROR(short_form);
-}
-
-
-TEST_F(SugarTest, AsDontCare2Tuple)
-{
-  const char* short_form =
-    "class Foo\n"
-    "  var create: U32\n"
-    "  fun f(a: (Foo, Bar)): Foo ? =>\n"
-    "    a as (Foo ref, _)";
-
-  const char* full_form =
-    "use \"builtin\"\n"
-    "class ref Foo\n"
-    "  var create: U32\n"
-    "  fun box f(a: (Foo, Bar)): Foo ? =>\n"
-    "    match a\n"
-    "    | ($let $1: Foo ref, _) =>\n"
-    "      consume $aliased $1\n"
-    "    else\n"
-    "      error\n"
-    "    end";
-
-  TEST_EQUIV(short_form, full_form);
-}
-
-
-TEST_F(SugarTest, AsDontCareMultiTuple)
-{
-  const char* short_form =
-    "class Foo\n"
-    "  var create: U32\n"
-    "  fun f(a: (Foo, Bar, Baz)): (Foo, Baz) ? =>\n"
-    "    a as (Foo ref, _, Baz ref)";
-
-  const char* full_form =
-    "use \"builtin\"\n"
-    "class ref Foo\n"
-    "  var create: U32\n"
-    "  fun box f(a: (Foo, Bar, Baz)): (Foo, Baz) ? =>\n"
-    "    match a\n"
-    "    | ($let $1: Foo ref, _, $let $2: Baz ref) =>\n"
-    "      (consume $aliased $1, consume $aliased $2)\n"
-    "    else\n"
-    "      error\n"
-    "    end";
-
-  TEST_EQUIV(short_form, full_form);
-}
-
-
-TEST_F(SugarTest, ObjectSimple)
-{
-  const char* short_form =
-    "class Foo\n"
-    "  var create: U32\n"
-    "  fun f() =>\n"
-    "    object fun foo() => 4 end";
-
-  const char* full_form =
-    "use \"builtin\"\n"
-    "class ref Foo\n"
-    "  var create: U32\n"
-    "  fun box f(): None =>\n"
-    "    $T.create()\n"
-    "    None\n"
-
-    "primitive val $T\n"
-    "  fun box foo(): None =>\n"
-    "    4\n"
-    "    None\n"
-    "  new val create(): $T val^ => true";
-
-  TEST_EQUIV(short_form, full_form);
-}
-
-
-TEST_F(SugarTest, ObjectWithField)
-{
-  const char* short_form =
-    "class Foo\n"
-    "  var create: U32\n"
-    "  fun f() =>\n"
-    "    object let x: T = 3 fun foo() => 4 end";
-
-  const char* full_form =
-    "use \"builtin\"\n"
-    "class ref Foo\n"
-    "  var create: U32\n"
-    "  fun box f(): None =>\n"
-    "    $T.create(3)\n"
-    "    None\n"
-
-    "class ref $T\n"
-    "  let x: T\n"
-    "  fun box foo(): None =>\n"
-    "    4\n"
-    "    None\n"
-    "  new ref create($1: T): $T ref^ => x = consume $1";
-
-  TEST_EQUIV(short_form, full_form);
-}
-
-
-TEST_F(SugarTest, ObjectWithBehaviour)
-{
-  const char* short_form =
-    "class Foo\n"
-    "  var create: U32\n"
-    "  fun f() =>\n"
-    "    object be foo() => 4 end";
-
-  const char* full_form =
-    "use \"builtin\"\n"
-    "class ref Foo\n"
-    "  var create: U32\n"
-    "  fun box f(): None =>\n"
-    "    $T.create()\n"
-    "    None\n"
-
-    "actor tag $T\n"
-    "  be tag foo(): None =>\n"
-    "    4\n"
-    "  new tag create(): $T tag^ => true";
-
-  TEST_EQUIV(short_form, full_form);
-}
-
-
-TEST_F(SugarTest, ObjectBox)
-{
-  const char* short_form =
-    "class Foo\n"
-    "  var create: U32\n"
-    "  fun f() =>\n"
-    "    object box fun foo() => 4 end";
-
-  const char* full_form =
-    "use \"builtin\"\n"
-    "class ref Foo\n"
-    "  var create: U32\n"
-    "  fun box f(): None =>\n"
-    "    $T.create()\n"
-    "    None\n"
-
-    "primitive val $T\n"
-    "  fun box foo(): None =>\n"
-    "    4\n"
-    "    None\n"
-    "  new val create(): $T val^ => true";
-
-  TEST_EQUIV(short_form, full_form);
-}
-
-
-TEST_F(SugarTest, ObjectRef)
-{
-  const char* short_form =
-    "class Foo\n"
-    "  var create: U32\n"
-    "  fun f() =>\n"
-    "    object ref fun foo() => 4 end";
-
-  const char* full_form =
-    "use \"builtin\"\n"
-    "class ref Foo\n"
-    "  var create: U32\n"
-    "  fun box f(): None =>\n"
-    "    $T.create()\n"
-    "    None\n"
-
-    "class ref $T\n"
-    "  fun box foo(): None =>\n"
-    "    4\n"
-    "    None\n"
-    "  new ref create(): $T ref^ => true";
-
-  TEST_EQUIV(short_form, full_form);
-}
-
-
-TEST_F(SugarTest, ObjectTagWithBehaviour)
-{
-  const char* short_form =
-    "class Foo\n"
-    "  var create: U32\n"
-    "  fun f() =>\n"
-    "    object tag be foo() => 4 end";
-
-  const char* full_form =
-    "use \"builtin\"\n"
-    "class ref Foo\n"
-    "  var create: U32\n"
-    "  fun box f(): None =>\n"
-    "    $T.create()\n"
-    "    None\n"
-
-    "actor tag $T\n"
-    "  be tag foo(): None =>\n"
-    "    4\n"
-    "  new tag create(): $T tag^ => true";
-
-  TEST_EQUIV(short_form, full_form);
-}
-
-
-TEST_F(SugarTest, ObjectRefWithBehaviour)
-{
-  const char* short_form =
-    "class Foo\n"
-    "  var create: U32\n"
-    "  fun f() =>\n"
-    "    object ref be foo() => 4 end";
-
-  TEST_ERROR(short_form);
 }
 
 
@@ -2048,8 +1748,6 @@ TEST_F(SugarTest, CaseFunction)
     "    | 0 => 0\n"
     "    | 1 => 1\n"
     "    | $let y: U64 => fib(y.sub(2)).add(fib(y.sub(1)))\n"
-    "    else\n"
-    "      None\n"
     "    end";
 
   TEST_EQUIV(short_form, full_form);
@@ -2079,8 +1777,6 @@ TEST_F(SugarTest, CaseFunctionPlusOtherFun)
     "    | 0 => 0\n"
     "    | 1 => 1\n"
     "    | $let y: U64 => fib(y.sub(2)).add(fib(y.sub(1)))\n"
-    "    else\n"
-    "      None\n"
     "    end";
 
   TEST_EQUIV(short_form, full_form);
@@ -2109,8 +1805,6 @@ TEST_F(SugarTest, CaseFunction2InOneClassPlusOtherFun)
     "    match consume $2\n"
     "    | 0 => 0\n"
     "    | $let x: U64 => 1\n"
-    "    else\n"
-    "      None\n"
     "    end\n"
     "  fun box bar(y: U32): (None | U32 | U32) =>\n"
     "    $3(consume y)\n"
@@ -2118,8 +1812,6 @@ TEST_F(SugarTest, CaseFunction2InOneClassPlusOtherFun)
     "    match consume $4\n"
     "    | 0 => 0\n"
     "    | $let y: U32 => 1\n"
-    "    else\n"
-    "      None\n"
     "    end";
 
   TEST_EQUIV(short_form, full_form);
@@ -2146,8 +1838,6 @@ TEST_F(SugarTest, CaseFunctionParamNamedTwice)
     "    | 0 => 0\n"
     "    | $let y: U64 => 1\n"
     "    | $let y: U64 => 2\n"
-    "    else\n"
-    "      None\n"
     "    end";
 
   TEST_EQUIV(short_form, full_form);
@@ -2172,8 +1862,6 @@ TEST_F(SugarTest, CaseFunction2Params)
     "    match (consume $2, consume $3)\n"
     "    | (0, 0) => 0\n"
     "    | ($let a: U64, $let b: U32) => 1\n"
-    "    else\n"
-    "      None\n"
     "    end";
 
   TEST_EQUIV(short_form, full_form);
@@ -2198,8 +1886,6 @@ TEST_F(SugarTest, CaseFunctionParamTypeUnion)
     "    match consume $2\n"
     "    | $let a: U32 => 0\n"
     "    | $let a: U64 => 1\n"
-    "    else\n"
-    "      None\n"
     "    end";
 
   TEST_EQUIV(short_form, full_form);
@@ -2224,8 +1910,6 @@ TEST_F(SugarTest, CaseFunctionReturnUnion)
     "    match consume $2\n"
     "    | 0 => 0\n"
     "    | $let a: U64 => 1\n"
-    "    else\n"
-    "      None\n"
     "    end";
 
   TEST_EQUIV(short_form, full_form);
@@ -2250,8 +1934,6 @@ TEST_F(SugarTest, CaseFunctionCap)
     "    match consume $2\n"
     "    | 0 => 0\n"
     "    | $let a: U64 => 1\n"
-    "    else\n"
-    "      None\n"
     "    end";
 
   TEST_EQUIV(short_form, full_form);
@@ -2283,13 +1965,11 @@ TEST_F(SugarTest, CaseFunctionOneErrors)
     "class ref Foo\n"
     "  var create: U32\n"
     "  fun ref fib(a: U64): (None | U64 | U64) ? =>\n"
-    "    $1(consume a)\n"
+    "    $1(consume a)?\n"
     "  fun ref $1($2: U64): (None | U64 | U64) ? =>\n"
     "    match consume $2\n"
     "    | 0 => 0\n"
     "    | $let a: U64 => 1\n"
-    "    else\n"
-    "      None\n"
     "    end";
 
   TEST_EQUIV(short_form, full_form);
@@ -2309,13 +1989,11 @@ TEST_F(SugarTest, CaseFunctionAllError)
     "class ref Foo\n"
     "  var create: U32\n"
     "  fun ref fib(a: U64): (None | U64 | U64) ? =>\n"
-    "    $1(consume a)\n"
+    "    $1(consume a)?\n"
     "  fun ref $1($2: U64): (None | U64 | U64) ? =>\n"
     "    match consume $2\n"
     "    | 0 => 0\n"
     "    | $let a: U64 => 1\n"
-    "    else\n"
-    "      None\n"
     "    end";
 
   TEST_EQUIV(short_form, full_form);
@@ -2414,8 +2092,6 @@ TEST_F(SugarTest, CaseFunctionDontCare)
     "    | (0, _) => 0\n"
     "    | ($let a: U64, $let b: U32) => 1\n"
     "    | (_, _) => 2\n"
-    "    else\n"
-    "      None\n"
     "    end";
 
   TEST_EQUIV(short_form, full_form);
@@ -2440,8 +2116,6 @@ TEST_F(SugarTest, CaseFunctionGuard)
     "    match consume $2\n"
     "    | 0 => 0\n"
     "    | $let a: U64 if a.gt(3) => 1\n"
-    "    else\n"
-    "      None\n"
     "    end";
 
   TEST_EQUIV(short_form, full_form);
@@ -2466,8 +2140,6 @@ TEST_F(SugarTest, CaseFunctionDefaultValue)
     "    match consume $2\n"
     "    | 0 => 0\n"
     "    | $let a: U64 => 1\n"
-    "    else\n"
-    "      None\n"
     "    end";
 
   TEST_EQUIV(short_form, full_form);
@@ -2504,8 +2176,6 @@ TEST_F(SugarTest, CaseBehaviour)
     "    match consume $2\n"
     "    | 0 => 0\n"
     "    | $let a: U64 => 1\n"
-    "    else\n"
-    "      None\n"
     "    end\n"
     "    None";
 
@@ -2555,8 +2225,6 @@ TEST_F(SugarTest, CaseFunctionTypeParam)
     "    match consume $2\n"
     "    | 0 => 0\n"
     "    | $let a: U64 => 1\n"
-    "    else\n"
-    "      None\n"
     "    end";
 
   TEST_EQUIV(short_form, full_form);
@@ -2581,8 +2249,6 @@ TEST_F(SugarTest, CaseFunction2TypeParams)
     "    match consume $2\n"
     "    | 0 => 0\n"
     "    | $let a: U64 => 1\n"
-    "    else\n"
-    "      None\n"
     "    end";
 
   TEST_EQUIV(short_form, full_form);
@@ -2607,8 +2273,6 @@ TEST_F(SugarTest, CaseFunctionTypeParamConstraint)
     "    match consume $2\n"
     "    | 0 => 0\n"
     "    | $let a: U64 => 1\n"
-    "    else\n"
-    "      None\n"
     "    end";
 
   TEST_EQUIV(short_form, full_form);
@@ -2633,8 +2297,6 @@ TEST_F(SugarTest, CaseFunctionTypeParamConstraintIntersect)
     "    match consume $2\n"
     "    | 0 => 0\n"
     "    | $let a: U64 => 1\n"
-    "    else\n"
-    "      None\n"
     "    end";
 
   TEST_EQUIV(short_form, full_form);
@@ -2684,8 +2346,6 @@ TEST_F(SugarTest, CaseFunctionDefaultTypeParam)
     "    match consume $2\n"
     "    | 0 => 0\n"
     "    | $let a: U64 => 1\n"
-    "    else\n"
-    "      None\n"
     "    end";
 
   TEST_EQUIV(short_form, full_form);

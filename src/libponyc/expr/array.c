@@ -7,6 +7,7 @@
 #include "../pkg/package.h"
 #include "../pass/names.h"
 #include "../pass/expr.h"
+#include "../pass/refer.h"
 #include "../type/alias.h"
 #include "../type/assemble.h"
 #include "../type/subtype.h"
@@ -14,11 +15,11 @@
 bool expr_array(pass_opt_t* opt, ast_t** astp)
 {
   ast_t* ast = *astp;
-  size_t size = ast_childcount(ast) - 1;
   ast_t* type = NULL;
   bool told_type = false;
 
-  AST_GET_CHILDREN(ast, type_spec, first_child);
+  AST_GET_CHILDREN(ast, type_spec, elements);
+  size_t size = ast_childcount(elements);
 
   if(ast_id(type_spec) != TK_NONE)
   {
@@ -26,18 +27,17 @@ bool expr_array(pass_opt_t* opt, ast_t** astp)
     told_type = true;
   }
 
-  for(ast_t* ele = first_child; ele != NULL; ele = ast_sibling(ele))
+  for(ast_t* ele = ast_child(elements); ele != NULL; ele = ast_sibling(ele))
   {
-    ast_t* c_type = ast_type(ele);
-
-    if(is_control_type(c_type))
+    if(ast_checkflag(ele, AST_FLAG_JUMPS_AWAY))
     {
       ast_error(opt->check.errors, ele,
-        "can't use an expression without a value in an array constructor");
+          "an array can't contain an expression that jumps away with no value");
       ast_free_unattached(type);
       return false;
     }
 
+    ast_t* c_type = ast_type(ele);
     if(is_typecheck_error(c_type))
       return false;
 
@@ -48,9 +48,10 @@ bool expr_array(pass_opt_t* opt, ast_t** astp)
         return false;
 
       c_type = ast_type(ele); // May have changed due to literals
+      ast_t* a_type = alias(c_type);
 
       errorframe_t info = NULL;
-      if(!is_subtype(c_type, type, &info, opt))
+      if(!is_subtype(a_type, type, &info, opt))
       {
         errorframe_t frame = NULL;
         ast_error_frame(&frame, ele,
@@ -78,16 +79,19 @@ bool expr_array(pass_opt_t* opt, ast_t** astp)
     }
   }
 
-  BUILD(ref, ast, NODE(TK_REFERENCE, ID("Array")));
+  if(!told_type)
+  {
+    ast_t* aliasable_type = type;
+    type = alias(aliasable_type);
+    ast_free_unattached(aliasable_type);
+  }
 
-  ast_t* a_type = alias(type);
+  BUILD(ref, ast, NODE(TK_REFERENCE, ID("Array")));
 
   BUILD(qualify, ast,
     NODE(TK_QUALIFY,
       TREE(ref)
-      NODE(TK_TYPEARGS, TREE(a_type))));
-
-  ast_free_unattached(type);
+      NODE(TK_TYPEARGS, TREE(type))));
 
   BUILD(dot, ast, NODE(TK_DOT, TREE(qualify) ID("create")));
 
@@ -100,10 +104,12 @@ bool expr_array(pass_opt_t* opt, ast_t** astp)
     NODE(TK_CALL,
       NODE(TK_POSITIONALARGS, TREE(size_arg_seq))
       NONE
+      NONE
       TREE(dot)));
 
-  if(!expr_reference(opt, &ref) ||
-    !expr_qualify(opt, &qualify) ||
+  if(!refer_reference(opt, &ref) ||
+    !refer_qualify(opt, qualify) ||
+    !expr_typeref(opt, &qualify) ||
     !expr_dot(opt, &dot) ||
     !expr_call(opt, &call)
     )
@@ -112,13 +118,16 @@ bool expr_array(pass_opt_t* opt, ast_t** astp)
   ast_swap(ast, call);
   *astp = call;
 
-  for(ast_t* ele = ast_childidx(ast, 1); ele != NULL; ele = ast_sibling(ele))
+  elements = ast_childidx(ast, 1);
+
+  for(ast_t* ele = ast_child(elements); ele != NULL; ele = ast_sibling(ele))
   {
     BUILD(append_chain, ast, NODE(TK_CHAIN, TREE(*astp) ID("push")));
 
     BUILD(append, ast,
       NODE(TK_CALL,
         NODE(TK_POSITIONALARGS, TREE(ele))
+        NONE
         NONE
         TREE(append_chain)));
 

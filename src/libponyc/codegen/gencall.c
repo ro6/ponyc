@@ -16,6 +16,47 @@
 #include "ponyassert.h"
 #include <string.h>
 
+typedef struct call_tuple_indices_t
+{
+  size_t* data;
+  size_t count;
+  size_t alloc;
+} call_tuple_indices_t;
+
+static void tuple_indices_init(call_tuple_indices_t* ti)
+{
+  ti->data = (size_t*)ponyint_pool_alloc_size(4 * sizeof(size_t));
+  ti->count = 0;
+  ti->alloc = 4;
+}
+
+static void tuple_indices_destroy(call_tuple_indices_t* ti)
+{
+  ponyint_pool_free_size(ti->alloc * sizeof(size_t), ti->data);
+  ti->data = NULL;
+  ti->count = 0;
+  ti->alloc = 0;
+}
+
+static void tuple_indices_push(call_tuple_indices_t* ti, size_t idx)
+{
+  if(ti->count == ti->alloc)
+  {
+    size_t old_alloc = ti->alloc * sizeof(size_t);
+    ti->data =
+      (size_t*)ponyint_pool_realloc_size(old_alloc, old_alloc * 2, ti->data);
+    ti->alloc *= 2;
+  }
+  ti->data[ti->count++] = idx;
+}
+
+static size_t tuple_indices_pop(call_tuple_indices_t* ti)
+{
+  pony_assert(ti->count > 0);
+
+  return ti->data[--ti->count];
+}
+
 static LLVMValueRef invoke_fun(compile_t* c, LLVMValueRef fun,
   LLVMValueRef* args, int count, const char* ret, bool setcc)
 {
@@ -41,7 +82,7 @@ static LLVMValueRef invoke_fun(compile_t* c, LLVMValueRef fun,
 static bool special_case_operator(compile_t* c, ast_t* ast,
   LLVMValueRef *value, bool short_circuit, bool native128)
 {
-  AST_GET_CHILDREN(ast, positional, named, postfix);
+  AST_GET_CHILDREN(ast, positional, named, question, postfix);
   AST_GET_CHILDREN(postfix, left, method);
 
   ast_t* right = ast_child(positional);
@@ -128,7 +169,7 @@ static bool special_case_operator(compile_t* c, ast_t* ast,
 
 static LLVMValueRef special_case_platform(compile_t* c, ast_t* ast)
 {
-  AST_GET_CHILDREN(ast, positional, named, postfix);
+  AST_GET_CHILDREN(ast, positional, named, question, postfix);
   AST_GET_CHILDREN(postfix, receiver, method);
 
   const char* method_name = ast_name(method);
@@ -143,7 +184,7 @@ static LLVMValueRef special_case_platform(compile_t* c, ast_t* ast)
 
 static bool special_case_call(compile_t* c, ast_t* ast, LLVMValueRef* value)
 {
-  AST_GET_CHILDREN(ast, positional, named, postfix);
+  AST_GET_CHILDREN(ast, positional, named, question, postfix);
 
   if((ast_id(postfix) != TK_FUNREF) || (ast_id(named) != TK_NONE))
     return false;
@@ -201,6 +242,12 @@ static bool special_case_call(compile_t* c, ast_t* ast, LLVMValueRef* value)
 static LLVMValueRef dispatch_function(compile_t* c, reach_type_t* t,
   reach_method_t* m, LLVMValueRef l_value)
 {
+  compile_method_t* c_m = (compile_method_t*)m->c_method;
+
+  if(t->bare_method == m)
+    return LLVMBuildBitCast(c->builder, l_value,
+      LLVMPointerType(c_m->func_type, 0), "");
+
   switch(t->underlying)
   {
     case TK_UNIONTYPE:
@@ -208,11 +255,14 @@ static LLVMValueRef dispatch_function(compile_t* c, reach_type_t* t,
     case TK_INTERFACE:
     case TK_TRAIT:
     {
+      pony_assert(t->bare_method == NULL);
+
       // Get the function from the vtable.
-      LLVMValueRef func = gendesc_vtable(c, l_value, m->vtable_index);
+      LLVMValueRef func = gendesc_vtable(c, gendesc_fetch(c, l_value),
+        m->vtable_index);
 
       return LLVMBuildBitCast(c->builder, func,
-        LLVMPointerType(m->func_type, 0), "");
+        LLVMPointerType(c_m->func_type, 0), "");
     }
 
     case TK_PRIMITIVE:
@@ -221,7 +271,7 @@ static LLVMValueRef dispatch_function(compile_t* c, reach_type_t* t,
     case TK_ACTOR:
     {
       // Static, get the actual function.
-      return m->func;
+      return c_m->func;
     }
 
     default: {}
@@ -237,21 +287,21 @@ static bool call_needs_receiver(ast_t* postfix, reach_type_t* t)
   {
     case TK_NEWREF:
     case TK_NEWBEREF:
-      break;
+      // No receiver if a new primitive.
+      if(((compile_type_t*)t->c_type)->primitive != NULL)
+        return false;
 
+      // No receiver if a new Pointer or Maybe.
+      if(is_pointer(t->ast) || is_maybe(t->ast))
+        return false;
+
+      return true;
+
+    // Always generate the receiver, even for bare function calls. This ensures
+    // that side-effects always happen.
     default:
       return true;
   }
-
-  // No receiver if a new primitive.
-  if(t->primitive != NULL)
-    return false;
-
-  // No receiver if a new Pointer or Maybe.
-  if(is_pointer(t->ast) || is_maybe(t->ast))
-    return false;
-
-  return true;
 }
 
 static void set_descriptor(compile_t* c, reach_type_t* t, LLVMValueRef value)
@@ -260,43 +310,120 @@ static void set_descriptor(compile_t* c, reach_type_t* t, LLVMValueRef value)
     return;
 
   LLVMValueRef desc_ptr = LLVMBuildStructGEP(c->builder, value, 0, "");
-  LLVMValueRef store = LLVMBuildStore(c->builder, t->desc, desc_ptr);
+  LLVMValueRef store = LLVMBuildStore(c->builder,
+    ((compile_type_t*)t->c_type)->desc, desc_ptr);
   const char id[] = "tbaa";
   LLVMSetMetadata(store, LLVMGetMDKindID(id, sizeof(id) - 1), c->tbaa_descptr);
 }
 
-static void set_method_external_nominal(reach_type_t* t, const char* name)
+// This function builds a stack of indices such that for an AST nested in an
+// arbitrary number of tuples, the stack will contain the indices of the
+// successive members to traverse when going from the top-level tuple to the
+// AST. If the AST isn't in a tuple, the stack stays empty.
+static ast_t* make_tuple_indices(call_tuple_indices_t* ti, ast_t* ast)
 {
-  reach_method_name_t* n = reach_method_name(t, name);
-  if(n != NULL)
+  ast_t* current = ast;
+  ast_t* parent = ast_parent(current);
+  while((parent != NULL) && (ast_id(parent) != TK_ASSIGN) &&
+    (ast_id(parent) != TK_CALL))
   {
-    size_t i = HASHMAP_BEGIN;
-    reach_method_t* m;
-    while((m = reach_methods_next(&n->r_methods, &i)) != NULL)
+    if(ast_id(parent) == TK_TUPLE)
     {
-      LLVMSetFunctionCallConv(m->func, LLVMCCallConv);
-      LLVMSetLinkage(m->func, LLVMExternalLinkage);
+      size_t index = 0;
+      ast_t* child = ast_child(parent);
+      while(current != child)
+      {
+        ++index;
+        child = ast_sibling(child);
+      }
+      tuple_indices_push(ti, index);
     }
+    current = parent;
+    parent = ast_parent(current);
+  }
+
+  return parent;
+}
+
+static ast_t* find_embed_constructor_receiver(ast_t* call)
+{
+  call_tuple_indices_t tuple_indices = {NULL, 0, 4};
+  tuple_indices_init(&tuple_indices);
+
+  ast_t* parent = make_tuple_indices(&tuple_indices, call);
+  ast_t* fieldref = NULL;
+
+  if((parent != NULL) && (ast_id(parent) == TK_ASSIGN))
+  {
+    // Traverse the LHS of the assignment looking for what our constructor call
+    // is assigned to.
+    ast_t* current = ast_childidx(parent, 1);
+    while((ast_id(current) == TK_TUPLE) || (ast_id(current) == TK_SEQ))
+    {
+      parent = current;
+      if(ast_id(current) == TK_TUPLE)
+      {
+        // If there are no indices left, we're destructuring a tuple.
+        // Errors in those cases have already been catched by the expr
+        // pass.
+        if(tuple_indices.count == 0)
+          break;
+
+        size_t index = tuple_indices_pop(&tuple_indices);
+        current = ast_childidx(parent, index);
+      } else {
+        current = ast_childlast(parent);
+      }
+    }
+
+    if(ast_id(current) == TK_EMBEDREF)
+      fieldref = current;
+  }
+
+  tuple_indices_destroy(&tuple_indices);
+  return fieldref;
+}
+
+static LLVMValueRef gen_constructor_receiver(compile_t* c, reach_type_t* t,
+  ast_t* call)
+{
+  ast_t* fieldref = find_embed_constructor_receiver(call);
+
+  if(fieldref != NULL)
+  {
+    LLVMValueRef receiver = gen_fieldptr(c, fieldref);
+    set_descriptor(c, t, receiver);
+    return receiver;
+  } else {
+    return gencall_alloc(c, t);
   }
 }
 
-static void set_method_external_interface(reach_type_t* t, const char* name)
+static void set_method_external_interface(reach_type_t* t, const char* name,
+  uint32_t vtable_index)
 {
-  set_method_external_nominal(t, name);
-
   size_t i = HASHMAP_BEGIN;
   reach_type_t* sub;
+
   while((sub = reach_type_cache_next(&t->subtypes, &i)) != NULL)
   {
     reach_method_name_t* n = reach_method_name(sub, name);
+
     if(n == NULL)
       continue;
+
     size_t j = HASHMAP_BEGIN;
     reach_method_t* m;
-    while((m = reach_methods_next(&n->r_methods, &j)) != NULL)
+
+    while((m = reach_mangled_next(&n->r_mangled, &j)) != NULL)
     {
-      LLVMSetFunctionCallConv(m->func, LLVMCCallConv);
-      LLVMSetLinkage(m->func, LLVMExternalLinkage);
+      if(m->vtable_index == vtable_index)
+      {
+        compile_method_t* c_m = (compile_method_t*)m->c_method;
+        LLVMSetFunctionCallConv(c_m->func, LLVMCCallConv);
+        LLVMSetLinkage(c_m->func, LLVMExternalLinkage);
+        break;
+      }
     }
   }
 }
@@ -332,23 +459,29 @@ LLVMValueRef gen_funptr(compile_t* c, ast_t* ast)
   reach_method_t* m = reach_method(t, cap, name, typeargs);
   LLVMValueRef funptr = dispatch_function(c, t, m, value);
 
-  if(c->linkage != LLVMExternalLinkage)
+  if((m->cap != TK_AT) && (c->linkage != LLVMExternalLinkage))
   {
     // We must reset the function linkage and calling convention since we're
-    // passing a function pointer to a FFI call.
+    // passing a function pointer to a FFI call. Bare methods always use the
+    // external linkage and the C calling convention so we don't need to process
+    // them.
     switch(t->underlying)
     {
       case TK_PRIMITIVE:
       case TK_STRUCT:
       case TK_CLASS:
       case TK_ACTOR:
-        set_method_external_nominal(t, name);
+      {
+        compile_method_t* c_m = (compile_method_t*)m->c_method;
+        LLVMSetFunctionCallConv(c_m->func, LLVMCCallConv);
+        LLVMSetLinkage(c_m->func, LLVMExternalLinkage);
         break;
+      }
       case TK_UNIONTYPE:
       case TK_ISECTTYPE:
       case TK_INTERFACE:
       case TK_TRAIT:
-        set_method_external_interface(t, name);
+        set_method_external_interface(t, name, m->vtable_index);
         break;
       default:
         pony_assert(0);
@@ -363,14 +496,17 @@ void gen_send_message(compile_t* c, reach_method_t* m, LLVMValueRef orig_args[],
   LLVMValueRef cast_args[], ast_t* args_ast)
 {
   // Allocate the message, setting its size and ID.
-  size_t msg_size = (size_t)LLVMABISizeOfType(c->target_data, m->msg_type);
-  LLVMTypeRef msg_type_ptr = LLVMPointerType(m->msg_type, 0);
+  compile_method_t* c_m = (compile_method_t*)m->c_method;
+  size_t msg_size = (size_t)LLVMABISizeOfType(c->target_data, c_m->msg_type);
+  LLVMTypeRef msg_type_ptr = LLVMPointerType(c_m->msg_type, 0);
 
   LLVMValueRef msg_args[3];
 
   msg_args[0] = LLVMConstInt(c->i32, ponyint_pool_index(msg_size), false);
   msg_args[1] = LLVMConstInt(c->i32, m->vtable_index, false);
   LLVMValueRef msg = gencall_runtime(c, "pony_alloc_msg", msg_args, 2, "");
+  LLVMValueRef md = LLVMMDNodeInContext(c->context, NULL, 0);
+  LLVMSetMetadataStr(msg, "pony.msgsend", md);
   LLVMValueRef msg_ptr = LLVMBuildBitCast(c->builder, msg, msg_type_ptr, "");
 
   for(unsigned int i = 0; i < m->param_count; i++)
@@ -401,7 +537,8 @@ void gen_send_message(compile_t* c, reach_method_t* m, LLVMValueRef orig_args[],
 
   if(need_trace)
   {
-    gencall_runtime(c, "pony_gc_send", &ctx, 1, "");
+    LLVMValueRef gc = gencall_runtime(c, "pony_gc_send", &ctx, 1, "");
+    LLVMSetMetadataStr(gc, "pony.msgsend", md);
     param = ast_child(params);
     arg_ast = ast_child(args_ast);
 
@@ -413,42 +550,47 @@ void gen_send_message(compile_t* c, reach_method_t* m, LLVMValueRef orig_args[],
       arg_ast = ast_sibling(arg_ast);
     }
 
-    gencall_runtime(c, "pony_send_done", &ctx, 1, "");
+    gc = gencall_runtime(c, "pony_send_done", &ctx, 1, "");
+    LLVMSetMetadataStr(gc, "pony.msgsend", md);
   }
 
   // Send the message.
   msg_args[0] = ctx;
   msg_args[1] = LLVMBuildBitCast(c->builder, cast_args[0], c->object_ptr, "");
   msg_args[2] = msg;
-  gencall_runtime(c, "pony_sendv", msg_args, 3, "");
+  LLVMValueRef send = gencall_runtime(c, "pony_sendv", msg_args, 3, "");
+  LLVMSetMetadataStr(send, "pony.msgsend", md);
 }
 
-typedef struct call_tuple_indices_t
+static bool contains_boxable(ast_t* type)
 {
-  size_t* data;
-  size_t count;
-  size_t alloc;
-} call_tuple_indices_t;
-
-static void tuple_indices_push(call_tuple_indices_t* ti, size_t idx)
-{
-  if(ti->count == ti->alloc)
+  switch(ast_id(type))
   {
-    size_t* tmp_data =
-      (size_t*)ponyint_pool_alloc_size(2 * ti->alloc * sizeof(size_t));
-    memcpy(tmp_data, ti->data, ti->count * sizeof(size_t));
-    ponyint_pool_free_size(ti->alloc * sizeof(size_t), ti->data);
-    ti->alloc *= 2;
-    ti->data = tmp_data;
+    case TK_TUPLETYPE:
+      return true;
+
+    case TK_NOMINAL:
+      return is_machine_word(type);
+
+    case TK_UNIONTYPE:
+    case TK_ISECTTYPE:
+    {
+      ast_t* child = ast_child(type);
+      while(child != NULL)
+      {
+        if(contains_boxable(type))
+          return true;
+
+        child = ast_sibling(child);
+      }
+
+      return false;
+    }
+
+    default:
+      pony_assert(0);
+      return false;
   }
-  ti->data[ti->count++] = idx;
-}
-
-static size_t tuple_indices_pop(call_tuple_indices_t* ti)
-{
-  pony_assert(ti->count > 0);
-
-  return ti->data[--ti->count];
 }
 
 static bool can_inline_message_send(reach_type_t* t, reach_method_t* m,
@@ -456,26 +598,15 @@ static bool can_inline_message_send(reach_type_t* t, reach_method_t* m,
 {
   switch(t->underlying)
   {
-    case TK_CLASS:
-    case TK_STRUCT:
-    case TK_PRIMITIVE:
+    case TK_UNIONTYPE:
+    case TK_ISECTTYPE:
+    case TK_INTERFACE:
+    case TK_TRAIT:
+      break;
+
+    default:
+      pony_assert(0);
       return false;
-
-    case TK_ACTOR:
-      return true;
-
-    default: {}
-  }
-
-  size_t param_count = m->param_count;
-  size_t alloc_index = ponyint_pool_index(param_count * sizeof(bool));
-  bool* boxed_params = (bool*)ponyint_pool_alloc(alloc_index);
-  memset(boxed_params, 0, param_count * sizeof(bool));
-
-  for(size_t i = 0; i < param_count; i++)
-  {
-    if(m->params[i].type->can_be_boxed)
-      boxed_params[i] = true;
   }
 
   size_t i = HASHMAP_BEGIN;
@@ -487,45 +618,48 @@ static bool can_inline_message_send(reach_type_t* t, reach_method_t* m,
     if(m_sub == NULL)
       continue;
 
-    bool early_bailout = false;
     switch(sub->underlying)
     {
       case TK_CLASS:
       case TK_PRIMITIVE:
-        early_bailout = true;
-        break;
+        return false;
 
       case TK_ACTOR:
         if(ast_id(m_sub->r_fun) == TK_FUN)
-          early_bailout = true;
+          return false;
         break;
 
       default: {}
     }
 
-    if(early_bailout)
-    {
-      ponyint_pool_free(alloc_index, boxed_params);
-      return false;
-    }
-
-    pony_assert(param_count == m_sub->param_count);
-    for(size_t i = 0; i < param_count; i++)
+    pony_assert(m->param_count == m_sub->param_count);
+    for(size_t i = 0; i < m->param_count; i++)
     {
       // If the param is a boxable type for us and an unboxable type for one of
       // our subtypes, that subtype will take that param as boxed through an
       // interface. In order to correctly box the value the actual function to
       // call must be resolved through name mangling, therefore we can't inline
       // the message send.
-      if(boxed_params[i] && !m_sub->params[i].type->can_be_boxed)
+      reach_type_t* param = m->params[i].type;
+      reach_type_t* sub_param = m_sub->params[i].type;
+      if(param->can_be_boxed)
       {
-        ponyint_pool_free(alloc_index, boxed_params);
-        return false;
+        if(!sub_param->can_be_boxed)
+          return false;
+
+        if(param->underlying == TK_TUPLETYPE)
+        {
+          ast_t* child = ast_child(param->ast);
+          while(child != NULL)
+          {
+            if(contains_boxable(child))
+              return false;
+          }
+        }
       }
     }
   }
 
-  ponyint_pool_free(alloc_index, boxed_params);
   return true;
 }
 
@@ -537,7 +671,7 @@ LLVMValueRef gen_call(compile_t* c, ast_t* ast)
   if(special_case_call(c, ast, &special))
     return special;
 
-  AST_GET_CHILDREN(ast, positional, named, postfix);
+  AST_GET_CHILDREN(ast, positional, named, question, postfix);
   AST_GET_CHILDREN(postfix, receiver, method);
   ast_t* typeargs = NULL;
 
@@ -596,68 +730,9 @@ LLVMValueRef gen_call(compile_t* c, ast_t* ast)
     {
       case TK_NEWREF:
       case TK_NEWBEREF:
-      {
-        call_tuple_indices_t tuple_indices = {NULL, 0, 4};
-        tuple_indices.data =
-          (size_t*)ponyint_pool_alloc_size(4 * sizeof(size_t));
-
-        ast_t* current = ast;
-        ast_t* parent = ast_parent(current);
-        while((parent != NULL) && (ast_id(parent) != TK_ASSIGN) &&
-          (ast_id(parent) != TK_CALL))
-        {
-          if(ast_id(parent) == TK_TUPLE)
-          {
-            size_t index = 0;
-            ast_t* child = ast_child(parent);
-            while(current != child)
-            {
-              ++index;
-              child = ast_sibling(child);
-            }
-            tuple_indices_push(&tuple_indices, index);
-          }
-          current = parent;
-          parent = ast_parent(current);
-        }
-
-        // If we're constructing an embed field, pass a pointer to the field
-        // as the receiver. Otherwise, allocate an object.
-        if((parent != NULL) && (ast_id(parent) == TK_ASSIGN))
-        {
-          size_t index = 1;
-          current = ast_childidx(parent, 1);
-          while((ast_id(current) == TK_TUPLE) || (ast_id(current) == TK_SEQ))
-          {
-            parent = current;
-            if(ast_id(current) == TK_TUPLE)
-            {
-              // If there are no indices left, we're destructuring a tuple.
-              // Errors in those cases have already been catched by the expr
-              // pass.
-              if(tuple_indices.count == 0)
-                break;
-              index = tuple_indices_pop(&tuple_indices);
-              current = ast_childidx(parent, index);
-            } else {
-              current = ast_childlast(parent);
-            }
-          }
-          if(ast_id(current) == TK_EMBEDREF)
-          {
-            args[0] = gen_fieldptr(c, current);
-            set_descriptor(c, t, args[0]);
-          } else {
-            args[0] = gencall_alloc(c, t);
-          }
-        } else {
-          args[0] = gencall_alloc(c, t);
-        }
+        args[0] = gen_constructor_receiver(c, t, ast);
         is_new_call = true;
-        ponyint_pool_free_size(tuple_indices.alloc * sizeof(size_t),
-          tuple_indices.data);
         break;
-      }
 
       case TK_BEREF:
       case TK_FUNREF:
@@ -672,7 +747,7 @@ LLVMValueRef gen_call(compile_t* c, ast_t* ast)
     }
   } else {
     // Use a null for the receiver type.
-    args[0] = LLVMConstNull(t->use_type);
+    args[0] = LLVMConstNull(((compile_type_t*)t->c_type)->use_type);
   }
 
   // Static or virtual dispatch.
@@ -703,10 +778,11 @@ LLVMValueRef gen_call(compile_t* c, ast_t* ast)
     }
   }
 
-  // Cast the arguments to the parameter types.
+  bool bare = m->cap == TK_AT;
+
   LLVMTypeRef f_type = LLVMGetElementType(LLVMTypeOf(func));
   LLVMTypeRef* params = (LLVMTypeRef*)ponyint_pool_alloc_size(buf_size);
-  LLVMGetParamTypes(f_type, params);
+  LLVMGetParamTypes(f_type, params + (bare ? 1 : 0));
 
   arg = ast_child(positional);
   i = 1;
@@ -752,6 +828,13 @@ LLVMValueRef gen_call(compile_t* c, ast_t* ast)
       i++;
     }
 
+    uintptr_t arg_offset = 0;
+    if(bare)
+    {
+      arg_offset = 1;
+      i--;
+    }
+
     if(func != NULL)
     {
       // If we can error out and we have an invoke target, generate an invoke
@@ -759,9 +842,9 @@ LLVMValueRef gen_call(compile_t* c, ast_t* ast)
       codegen_debugloc(c, ast);
 
       if(ast_canerror(ast) && (c->frame->invoke_target != NULL))
-        r = invoke_fun(c, func, args, i, "", true);
+        r = invoke_fun(c, func, args + arg_offset, i, "", !bare);
       else
-        r = codegen_call(c, func, args, i);
+        r = codegen_call(c, func, args + arg_offset, i, !bare);
 
       if(is_new_call)
       {
@@ -772,6 +855,11 @@ LLVMValueRef gen_call(compile_t* c, ast_t* ast)
       codegen_debugloc(c, NULL);
     }
   }
+
+  // Bare methods with None return type return void, special case a None return
+  // value.
+  if(bare && is_none(m->result->ast))
+    r = c->none_instance;
 
   // Class constructors return void, expression result is the receiver.
   if(((ast_id(postfix) == TK_NEWREF) || (ast_id(postfix) == TK_NEWBEREF)) &&
@@ -844,39 +932,70 @@ LLVMValueRef gen_pattern_eq(compile_t* c, ast_t* pattern, LLVMValueRef r_value)
   args[1] = r_value;
 
   codegen_debugloc(c, pattern);
-  LLVMValueRef result = codegen_call(c, func, args, 2);
+  LLVMValueRef result = codegen_call(c, func, args, 2, true);
   codegen_debugloc(c, NULL);
 
   return result;
 }
 
-static LLVMValueRef declare_ffi_vararg(compile_t* c, const char* f_name,
-  reach_type_t* t, bool err)
+static LLVMTypeRef ffi_return_type(compile_t* c, reach_type_t* t,
+  bool intrinsic)
 {
-  LLVMTypeRef f_type = LLVMFunctionType(t->use_type, NULL, 0, true);
-  LLVMValueRef func = LLVMAddFunction(c->module, f_name, f_type);
+  compile_type_t* c_t = (compile_type_t*)t->c_type;
 
-  if(!err)
+  if(t->underlying == TK_TUPLETYPE)
   {
-#if PONY_LLVM >= 309
-    LLVM_DECLARE_ATTRIBUTEREF(nounwind_attr, nounwind, 0);
+    pony_assert(intrinsic);
 
-    LLVMAddAttributeAtIndex(func, LLVMAttributeFunctionIndex, nounwind_attr);
-#else
-    LLVMAddFunctionAttr(func, LLVMNoUnwindAttribute);
-#endif
+    // Can't use the named type. Build an unnamed type with the same elements.
+    unsigned int count = LLVMCountStructElementTypes(c_t->use_type);
+    size_t buf_size = count * sizeof(LLVMTypeRef);
+    LLVMTypeRef* e_types = (LLVMTypeRef*)ponyint_pool_alloc_size(buf_size);
+    LLVMGetStructElementTypes(c_t->use_type, e_types);
+
+    ast_t* child = ast_child(t->ast);
+    size_t i = 0;
+
+    while(child != NULL)
+    {
+      // A Bool in an intrinsic tuple return type is an i1, not an ibool.
+      if(is_bool(child))
+        e_types[i] = c->i1;
+
+      child = ast_sibling(child);
+      i++;
+    }
+
+    LLVMTypeRef r_type = LLVMStructTypeInContext(c->context, e_types, count,
+      false);
+    ponyint_pool_free_size(buf_size, e_types);
+    return r_type;
+  } else {
+    // An intrinsic that returns a Bool returns an i1, not an ibool.
+    if(intrinsic && is_bool(t->ast))
+      return c->i1;
+    else
+      return c_t->use_type;
   }
+}
+
+static LLVMValueRef declare_ffi_vararg(compile_t* c, const char* f_name,
+  reach_type_t* t)
+{
+  LLVMTypeRef r_type = ffi_return_type(c, t, false);
+  LLVMTypeRef f_type = LLVMFunctionType(r_type, NULL, 0, true);
+  LLVMValueRef func = LLVMAddFunction(c->module, f_name, f_type);
 
   return func;
 }
 
 static LLVMValueRef declare_ffi(compile_t* c, const char* f_name,
-  reach_type_t* t, ast_t* args, bool err, bool intrinsic)
+  reach_type_t* t, ast_t* args, bool intrinsic)
 {
   ast_t* last_arg = ast_childlast(args);
 
   if((last_arg != NULL) && (ast_id(last_arg) == TK_ELLIPSIS))
-    return declare_ffi_vararg(c, f_name, t, err);
+    return declare_ffi_vararg(c, f_name, t);
 
   int count = (int)ast_childcount(args);
   size_t buf_size = count * sizeof(LLVMTypeRef);
@@ -899,61 +1018,14 @@ static LLVMValueRef declare_ffi(compile_t* c, const char* f_name,
     if(intrinsic && is_bool(pt->ast))
       f_params[count++] = c->i1;
     else
-      f_params[count++] = pt->use_type;
+      f_params[count++] = ((compile_type_t*)pt->c_type)->use_type;
 
     arg = ast_sibling(arg);
   }
 
-  LLVMTypeRef r_type;
-
-  if(t->underlying == TK_TUPLETYPE)
-  {
-    // Can't use the named type. Build an unnamed type with the same
-    // elements.
-    unsigned int count = LLVMCountStructElementTypes(t->use_type);
-    size_t buf_size = count * sizeof(LLVMTypeRef);
-    LLVMTypeRef* e_types = (LLVMTypeRef*)ponyint_pool_alloc_size(buf_size);
-    LLVMGetStructElementTypes(t->use_type, e_types);
-
-    if(intrinsic)
-    {
-      ast_t* child = ast_child(t->ast);
-      size_t i = 0;
-
-      while(child != NULL)
-      {
-        // A Bool in an intrinsic tuple return type is an i1, not an ibool.
-        if(is_bool(child))
-          e_types[i] = c->i1;
-
-        child = ast_sibling(child);
-        i++;
-      }
-    }
-
-    r_type = LLVMStructTypeInContext(c->context, e_types, count, false);
-    ponyint_pool_free_size(buf_size, e_types);
-  } else {
-    // An intrinsic that returns a Bool returns an i1, not an ibool.
-    if(intrinsic && is_bool(t->ast))
-      r_type = c->i1;
-    else
-      r_type = t->use_type;
-  }
-
+  LLVMTypeRef r_type = ffi_return_type(c, t, intrinsic);
   LLVMTypeRef f_type = LLVMFunctionType(r_type, f_params, count, false);
   LLVMValueRef func = LLVMAddFunction(c->module, f_name, f_type);
-
-  if(!err)
-  {
-#if PONY_LLVM >= 309
-    LLVM_DECLARE_ATTRIBUTEREF(nounwind_attr, nounwind, 0);
-
-    LLVMAddAttributeAtIndex(func, LLVMAttributeFunctionIndex, nounwind_attr);
-#else
-    LLVMAddFunctionAttr(func, LLVMNoUnwindAttribute);
-#endif
-  }
 
   ponyint_pool_free_size(buf_size, f_params);
   return func;
@@ -1022,13 +1094,13 @@ LLVMValueRef gen_ffi(compile_t* c, ast_t* ast)
       // Define using the declared types.
       AST_GET_CHILDREN(decl, decl_id, decl_ret, decl_params, decl_err);
       err = (ast_id(decl_err) == TK_QUESTION);
-      func = declare_ffi(c, f_name, t, decl_params, err, false);
-    } else if(!strncmp(f_name, "llvm.", 5)) {
+      func = declare_ffi(c, f_name, t, decl_params, false);
+    } else if(!strncmp(f_name, "llvm.", 5) || !strncmp(f_name, "internal.", 9)) {
       // Intrinsic, so use the exact types we supply.
-      func = declare_ffi(c, f_name, t, args, err, true);
+      func = declare_ffi(c, f_name, t, args, true);
     } else {
       // Make it varargs.
-      func = declare_ffi_vararg(c, f_name, t, err);
+      func = declare_ffi_vararg(c, f_name, t);
     }
   }
 
@@ -1083,7 +1155,7 @@ LLVMValueRef gen_ffi(compile_t* c, ast_t* ast)
 
   // Special case a None return value, which is used for void functions.
   if(is_none(type))
-    return t->instance;
+    return ((compile_type_t*)t->c_type)->instance;
 
   return result;
 }
@@ -1101,18 +1173,22 @@ LLVMValueRef gencall_runtime(compile_t* c, const char *name,
 
 LLVMValueRef gencall_create(compile_t* c, reach_type_t* t)
 {
+  compile_type_t* c_t = (compile_type_t*)t->c_type;
+
   LLVMValueRef args[2];
   args[0] = codegen_ctx(c);
-  args[1] = LLVMConstBitCast(t->desc, c->descriptor_ptr);
+  args[1] = LLVMConstBitCast(c_t->desc, c->descriptor_ptr);
 
   LLVMValueRef result = gencall_runtime(c, "pony_create", args, 2, "");
-  return LLVMBuildBitCast(c->builder, result, t->use_type, "");
+  return LLVMBuildBitCast(c->builder, result, c_t->use_type, "");
 }
 
 LLVMValueRef gencall_alloc(compile_t* c, reach_type_t* t)
 {
+  compile_type_t* c_t = (compile_type_t*)t->c_type;
+
   // Do nothing for primitives.
-  if(t->primitive != NULL)
+  if(c_t->primitive != NULL)
     return NULL;
 
   // Do nothing for Pointer and Maybe.
@@ -1120,8 +1196,8 @@ LLVMValueRef gencall_alloc(compile_t* c, reach_type_t* t)
     return NULL;
 
   // Use the global instance if we have one.
-  if(t->instance != NULL)
-    return t->instance;
+  if(c_t->instance != NULL)
+    return c_t->instance;
 
   if(t->underlying == TK_ACTOR)
     return gencall_create(c, t);
@@ -1137,29 +1213,29 @@ LLVMValueRef gencall_allocstruct(compile_t* c, reach_type_t* t)
   args[0] = codegen_ctx(c);
 
   LLVMValueRef result;
+  compile_type_t* c_t = (compile_type_t*)t->c_type;
 
-  size_t size = t->abi_size;
+  size_t size = c_t->abi_size;
   if(size == 0)
     size = 1;
 
-  if(t->final_fn == NULL)
+  if(size <= HEAP_MAX)
   {
-    if(size <= HEAP_MAX)
-    {
-      uint32_t index = ponyint_heap_index(size);
-      args[1] = LLVMConstInt(c->i32, index, false);
+    uint32_t index = ponyint_heap_index(size);
+    args[1] = LLVMConstInt(c->i32, index, false);
+    if(c_t->final_fn == NULL)
       result = gencall_runtime(c, "pony_alloc_small", args, 2, "");
-    } else {
-      args[1] = LLVMConstInt(c->intptr, size, false);
-      result = gencall_runtime(c, "pony_alloc_large", args, 2, "");
-    }
+    else
+      result = gencall_runtime(c, "pony_alloc_small_final", args, 2, "");
   } else {
     args[1] = LLVMConstInt(c->intptr, size, false);
-    args[2] = LLVMConstBitCast(t->final_fn, c->final_fn);
-    result = gencall_runtime(c, "pony_alloc_final", args, 3, "");
+    if(c_t->final_fn == NULL)
+      result = gencall_runtime(c, "pony_alloc_large", args, 2, "");
+    else
+      result = gencall_runtime(c, "pony_alloc_large_final", args, 2, "");
   }
 
-  result = LLVMBuildBitCast(c->builder, result, t->structure_ptr, "");
+  result = LLVMBuildBitCast(c->builder, result, c_t->structure_ptr, "");
   set_descriptor(c, t, result);
 
   return result;

@@ -256,7 +256,11 @@ void ponyint_cpu_affinity(uint32_t cpu)
     return;
 
 #if defined(PLATFORM_IS_LINUX)
-  // Affinity is handled when spawning the thread.
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(cpu, &set);
+
+    sched_setaffinity(0, sizeof(cpu_set_t), &set);
 #elif defined(PLATFORM_IS_FREEBSD)
   // No pinning, since we cannot yet determine hyperthreads vs physical cores.
 #elif defined(PLATFORM_IS_MACOSX)
@@ -305,7 +309,7 @@ void ponyint_cpu_core_pause(uint64_t tsc, uint64_t tsc2, bool yield)
   DTRACE1(CPU_NANOSLEEP, ts.tv_nsec);
   nanosleep(&ts, NULL);
 #else
-  Sleep(0);
+  Sleep(yield ? 1 : 0);
 #endif
 }
 

@@ -18,7 +18,7 @@ class Listener is TCPListenNotify
 
   fun ref listening(listen: TCPListener ref) =>
     try
-      (_host, _port) = listen.local_address().name()
+      (_host, _port) = listen.local_address().name()?
       _out.print("listening on " + _host + ":" + _port)
     else
       _out.print("couldn't get local address")
@@ -41,7 +41,9 @@ class Server is TCPConnectionNotify
   fun ref accepted(conn: TCPConnection ref) =>
     _out.print("connection accepted")
 
-  fun ref received(conn: TCPConnection ref, data: Array[U8] iso): Bool =>
+  fun ref received(conn: TCPConnection ref, data: Array[U8] iso,
+    times: USize): Bool
+  =>
     _out.print("data received, looping it back")
     conn.write("server says: ")
     conn.write(consume data)
@@ -49,3 +51,6 @@ class Server is TCPConnectionNotify
 
   fun ref closed(conn: TCPConnection ref) =>
     _out.print("server closed")
+
+  fun ref connect_failed(conn: TCPConnection ref) =>
+    _out.print("connect failed")

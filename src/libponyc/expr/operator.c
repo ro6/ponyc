@@ -3,200 +3,18 @@
 #include "postfix.h"
 #include "control.h"
 #include "reference.h"
+#include "../ast/astbuild.h"
+#include "../ast/id.h"
 #include "../ast/lexer.h"
 #include "../pass/expr.h"
+#include "../pass/syntax.h"
+#include "../pkg/package.h"
 #include "../type/alias.h"
 #include "../type/assemble.h"
 #include "../type/matchtype.h"
 #include "../type/safeto.h"
 #include "../type/subtype.h"
 #include "ponyassert.h"
-
-static bool assign_id(pass_opt_t* opt, ast_t* ast, bool let, bool need_value)
-{
-  pony_assert(ast_id(ast) == TK_ID);
-  const char* name = ast_name(ast);
-
-  sym_status_t status;
-  ast_get(ast, name, &status);
-
-  switch(status)
-  {
-    case SYM_UNDEFINED:
-      if(need_value)
-      {
-        ast_error(opt->check.errors, ast,
-          "the left side is undefined but its value is used");
-        return false;
-      }
-
-      ast_setstatus(ast, name, SYM_DEFINED);
-      return true;
-
-    case SYM_DEFINED:
-      if(let)
-      {
-        ast_error(opt->check.errors, ast,
-          "can't assign to a let or embed definition more than once");
-        return false;
-      }
-
-      return true;
-
-    case SYM_CONSUMED:
-    {
-      bool ok = true;
-
-      if(need_value)
-      {
-        ast_error(opt->check.errors, ast,
-          "the left side is consumed but its value is used");
-        ok = false;
-      }
-
-      if(let)
-      {
-        ast_error(opt->check.errors, ast,
-          "can't assign to a let or embed definition more than once");
-        ok = false;
-      }
-
-      if(opt->check.frame->try_expr != NULL)
-      {
-        ast_error(opt->check.errors, ast,
-          "can't reassign to a consumed identifier in a try expression");
-        ok = false;
-      }
-
-      if(ok)
-        ast_setstatus(ast, name, SYM_DEFINED);
-
-      return ok;
-    }
-
-    default: {}
-  }
-
-  pony_assert(0);
-  return false;
-}
-
-static bool is_lvalue(pass_opt_t* opt, ast_t* ast, bool need_value)
-{
-  switch(ast_id(ast))
-  {
-    case TK_DONTCARE:
-      return true;
-
-    case TK_DONTCAREREF:
-      // Can only assign to it if we don't need the value.
-      return !need_value;
-
-    case TK_VAR:
-    case TK_LET:
-      return assign_id(opt, ast_child(ast), ast_id(ast) == TK_LET, need_value);
-
-    case TK_VARREF:
-    {
-      ast_t* id = ast_child(ast);
-      return assign_id(opt, id, false, need_value);
-    }
-
-    case TK_LETREF:
-    {
-      ast_error(opt->check.errors, ast, "can't assign to a let local");
-      return false;
-    }
-
-    case TK_FVARREF:
-    {
-      AST_GET_CHILDREN(ast, left, right);
-
-      if(ast_id(left) == TK_THIS)
-        return assign_id(opt, right, false, need_value);
-
-      return true;
-    }
-
-    case TK_FLETREF:
-    {
-      AST_GET_CHILDREN(ast, left, right);
-
-      if(ast_id(left) != TK_THIS)
-      {
-        if(ast_id(ast_type(left)) == TK_TUPLETYPE)
-        {
-          ast_error(opt->check.errors, ast,
-            "can't assign to an element of a tuple");
-        } else {
-          ast_error(opt->check.errors, ast, "can't assign to a let field");
-        }
-        return false;
-      }
-
-      if(opt->check.frame->loop_body != NULL)
-      {
-        ast_error(opt->check.errors, ast,
-          "can't assign to a let field in a loop");
-        return false;
-      }
-
-      return assign_id(opt, right, true, need_value);
-    }
-
-    case TK_EMBEDREF:
-    {
-      AST_GET_CHILDREN(ast, left, right);
-
-      if(ast_id(left) != TK_THIS)
-      {
-        ast_error(opt->check.errors, ast, "can't assign to an embed field");
-        return false;
-      }
-
-      if(opt->check.frame->loop_body != NULL)
-      {
-        ast_error(opt->check.errors, ast,
-          "can't assign to an embed field in a loop");
-        return false;
-      }
-
-      return assign_id(opt, right, true, need_value);
-    }
-
-    case TK_TUPLE:
-    {
-      // A tuple is an lvalue if every component expression is an lvalue.
-      ast_t* child = ast_child(ast);
-
-      while(child != NULL)
-      {
-        if(!is_lvalue(opt, child, need_value))
-          return false;
-
-        child = ast_sibling(child);
-      }
-
-      return true;
-    }
-
-    case TK_SEQ:
-    {
-      // A sequence is an lvalue if it has a single child that is an lvalue.
-      // This is used because the components of a tuple are sequences.
-      ast_t* child = ast_child(ast);
-
-      if(ast_sibling(child) != NULL)
-        return false;
-
-      return is_lvalue(opt, child, need_value);
-    }
-
-    default: {}
-  }
-
-  return false;
-}
 
 bool expr_identity(pass_opt_t* opt, ast_t* ast)
 {
@@ -396,7 +214,7 @@ static bool is_expr_constructor(ast_t* ast)
   switch(ast_id(ast))
   {
     case TK_CALL:
-      return ast_id(ast_childidx(ast, 2)) == TK_NEWREF;
+      return ast_id(ast_childidx(ast, 3)) == TK_NEWREF;
     case TK_SEQ:
       return is_expr_constructor(ast_childlast(ast));
     case TK_IF:
@@ -498,21 +316,14 @@ bool expr_assign(pass_opt_t* opt, ast_t* ast)
 {
   // Left and right are swapped in the AST to make sure we type check the
   // right side before the left. Fetch them in the opposite order.
-  pony_assert(ast != NULL);
-
+  pony_assert(ast_id(ast) == TK_ASSIGN);
   AST_GET_CHILDREN(ast, right, left);
   ast_t* l_type = ast_type(left);
 
-  if(l_type == NULL || !is_lvalue(opt, left, is_result_needed(ast)))
+  if(l_type == NULL)
   {
-    if(ast_id(left) == TK_DONTCAREREF)
-    {
-      ast_error(opt->check.errors, left,
-        "can't read from '_'");
-    } else {
-      ast_error(opt->check.errors, ast,
-        "left side must be something that can be assigned to");
-    }
+    ast_error(opt->check.errors, ast,
+      "left side must be something that can be assigned to");
     return false;
   }
 
@@ -524,10 +335,10 @@ bool expr_assign(pass_opt_t* opt, ast_t* ast)
   if(is_typecheck_error(r_type))
     return false;
 
-  if(is_control_type(r_type))
+  if(ast_checkflag(right, AST_FLAG_JUMPS_AWAY))
   {
     ast_error(opt->check.errors, ast,
-      "the right hand side does not return a value");
+      "the right hand side jumps away without a value");
     return false;
   }
 
@@ -561,6 +372,11 @@ bool expr_assign(pass_opt_t* opt, ast_t* ast)
     errorframe_t frame = NULL;
     ast_error_frame(&frame, ast, "right side must be a subtype of left side");
     errorframe_append(&frame, &info);
+
+    if(ast_checkflag(ast_type(right), AST_FLAG_INCOMPLETE))
+      ast_error_frame(&frame, right,
+        "this might be possible if all fields were already defined");
+
     errorframe_report(&frame, opt->check.errors);
     ast_free_unattached(a_type);
     return false;
@@ -636,49 +452,148 @@ bool expr_assign(pass_opt_t* opt, ast_t* ast)
   return true;
 }
 
+static bool add_as_type(pass_opt_t* opt, ast_t* ast, ast_t* expr,
+  ast_t* type, ast_t* pattern, ast_t* body)
+{
+  pony_assert(type != NULL);
+
+  switch(ast_id(type))
+  {
+    case TK_TUPLETYPE:
+    {
+      BUILD(tuple_pattern, pattern, NODE(TK_SEQ, NODE(TK_TUPLE)));
+      ast_append(pattern, tuple_pattern);
+      ast_t* pattern_child = ast_child(tuple_pattern);
+
+      BUILD(tuple_body, body, NODE(TK_SEQ, NODE(TK_TUPLE)));
+      ast_t* body_child = ast_child(tuple_body);
+
+      for(ast_t* p = ast_child(type); p != NULL; p = ast_sibling(p))
+      {
+        if(!add_as_type(opt, ast, expr, p, pattern_child, body_child))
+          return false;
+      }
+
+      if(ast_childcount(body_child) == 1)
+      {
+        // Only one child, not actually a tuple
+        ast_t* t = ast_pop(body_child);
+        ast_free(tuple_body);
+        tuple_body = t;
+      }
+
+      ast_append(body, tuple_body);
+      break;
+    }
+
+    case TK_DONTCARETYPE:
+    {
+      BUILD(dontcare, pattern,
+        NODE(TK_SEQ,
+          NODE(TK_REFERENCE, ID("_"))));
+      ast_append(pattern, dontcare);
+      break;
+    }
+
+    default:
+    {
+      const char* name = package_hygienic_id(&opt->check);
+      ast_t* a_type = alias(type);
+
+      ast_t* expr_type = ast_type(expr);
+      if(is_matchtype(expr_type, type, opt) == MATCHTYPE_DENY)
+      {
+        ast_error(opt->check.errors, ast,
+          "this capture violates capabilities");
+        ast_error_continue(opt->check.errors, type,
+          "match type: %s", ast_print_type(type));
+        ast_error_continue(opt->check.errors, expr,
+          "pattern type: %s", ast_print_type(expr_type));
+
+        return false;
+      }
+
+      BUILD(pattern_elem, pattern,
+        NODE(TK_SEQ,
+          NODE(TK_LET, ID(name) TREE(a_type))));
+
+      BUILD(body_elem, body,
+        NODE(TK_SEQ,
+          NODE(TK_CONSUME, NODE(TK_ALIASED) NODE(TK_REFERENCE, ID(name)))));
+
+      ast_append(pattern, pattern_elem);
+      ast_append(body, body_elem);
+      break;
+    }
+  }
+
+  return true;
+}
+
+bool expr_as(pass_opt_t* opt, ast_t** astp)
+{
+  pony_assert(astp != NULL);
+  ast_t* ast = *astp;
+  pony_assert(ast != NULL);
+
+  pony_assert(ast_id(ast) == TK_AS);
+  AST_GET_CHILDREN(ast, expr, type);
+
+  ast_t* expr_type = ast_type(expr);
+  if(is_typecheck_error(expr_type))
+    return false;
+
+  if(ast_id(expr_type) == TK_LITERAL || ast_id(expr_type) == TK_OPERATORLITERAL)
+  {
+    ast_error(opt->check.errors, expr, "Cannot cast uninferred literal");
+    return false;
+  }
+
+  ast_t* pattern_root = ast_from(type, TK_LEX_ERROR);
+  ast_t* body_root = ast_from(type, TK_LEX_ERROR);
+  if(!add_as_type(opt, ast, expr, type, pattern_root, body_root))
+    return false;
+
+  ast_t* body = ast_pop(body_root);
+  ast_free(body_root);
+
+  if(body == NULL)
+  {
+    // No body implies all types are "don't care"
+    ast_error(opt->check.errors, ast, "Cannot treat value as \"don't care\"");
+    ast_free(pattern_root);
+    return false;
+  }
+
+  // Don't need top sequence in pattern
+  pony_assert(ast_id(ast_child(pattern_root)) == TK_SEQ);
+  ast_t* pattern = ast_pop(ast_child(pattern_root));
+  ast_free(pattern_root);
+
+  REPLACE(astp,
+    NODE(TK_MATCH, AST_SCOPE
+      NODE(TK_SEQ, TREE(expr))
+      NODE(TK_CASES, AST_SCOPE
+        NODE(TK_CASE, AST_SCOPE
+          TREE(pattern)
+          NONE
+          TREE(body)))
+      NODE(TK_SEQ, AST_SCOPE NODE(TK_ERROR, NONE))));
+
+  if(!ast_passes_subtree(astp, opt, PASS_EXPR))
+    return false;
+
+  return true;
+}
+
 bool expr_consume(pass_opt_t* opt, ast_t* ast)
 {
+  pony_assert(ast_id(ast) == TK_CONSUME);
   AST_GET_CHILDREN(ast, cap, term);
   ast_t* type = ast_type(term);
 
   if(is_typecheck_error(type))
     return false;
-
-  const char* name = NULL;
-
-  switch(ast_id(term))
-  {
-    case TK_VARREF:
-    case TK_LETREF:
-    case TK_PARAMREF:
-    {
-      ast_t* id = ast_child(term);
-      name = ast_name(id);
-      break;
-    }
-
-    case TK_THIS:
-    {
-      name = stringtab("this");
-      break;
-    }
-
-    default:
-      ast_error(opt->check.errors, ast,
-        "consume must take 'this', a local, or a parameter");
-      return false;
-  }
-
-  // Can't consume from an outer scope while in a loop condition.
-  if((opt->check.frame->loop_cond != NULL) &&
-    !ast_within_scope(opt->check.frame->loop_cond, ast, name))
-  {
-    ast_error(opt->check.errors, ast,
-      "can't consume from an outer scope in a loop condition");
-    return false;
-  }
-
-  ast_setstatus(ast, name, SYM_CONSUMED);
 
   token_id tcap = ast_id(cap);
   ast_t* c_type = consume_type(type, tcap);

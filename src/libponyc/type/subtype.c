@@ -23,6 +23,10 @@ typedef enum
 
 static bool is_eq_typeargs(ast_t* a, ast_t* b, errorframe_t* errorf,
   pass_opt_t* opt);
+static bool is_x_sub_typeparam(ast_t* sub, ast_t* super,
+  check_cap_t check_cap, errorframe_t* errorf, pass_opt_t* opt);
+static bool is_x_sub_arrow(ast_t* sub, ast_t* super,
+  check_cap_t check_cap, errorframe_t* errorf, pass_opt_t* opt);
 static bool is_isect_sub_x(ast_t* sub, ast_t* super, check_cap_t check_cap,
   errorframe_t* errorf, pass_opt_t* opt);
 static bool is_nominal_sub_x(ast_t* sub, ast_t* super, check_cap_t check_cap,
@@ -131,6 +135,11 @@ static bool is_sub_cap_and_eph(ast_t* sub, ast_t* super, check_cap_t check_cap,
           ast_print_type(sub), ast_print_type(super),
           ast_print_type(sub_cap), ast_print_type(sub_eph),
           ast_print_type(super_cap), ast_print_type(super_eph));
+
+        if(is_cap_sub_cap(ast_id(sub_cap), ast_id(super_eph), ast_id(super_cap),
+          ast_id(super_eph)))
+          ast_error_frame(errorf, sub_cap,
+            "this would be possible if the subcap were more ephemeral");
       }
 
       return false;
@@ -303,7 +312,7 @@ static bool is_reified_fun_sub_fun(ast_t* sub, ast_t* super,
     ast_t* sub_constraint = ast_childidx(sub_typeparam, 1);
     ast_t* super_constraint = ast_childidx(super_typeparam, 1);
 
-    if(!is_x_sub_x(super_constraint, sub_constraint, CHECK_CAP_SUB, errorf,
+    if(!is_x_sub_x(super_constraint, sub_constraint, CHECK_CAP_EQ, errorf,
       opt))
     {
       if(errorf != NULL)
@@ -433,6 +442,21 @@ static bool is_fun_sub_fun(ast_t* sub, ast_t* super, errorframe_t* errorf,
     if(errorf != NULL)
       ast_error_frame(errorf, sub,
         "methods have a different number of parameters");
+
+    return false;
+  }
+
+  bool sub_bare = ast_id(sub_cap) == TK_AT;
+  bool super_bare = ast_id(super_cap) == TK_AT;
+
+  if(sub_bare != super_bare)
+  {
+    if(errorf != NULL)
+    {
+      ast_error_frame(errorf, sub,
+        "method %s is not a subtype of method %s: their bareness differ",
+        ast_name(sub_id), ast_name(super_id));
+    }
 
     return false;
   }
@@ -665,22 +689,6 @@ static bool is_tuple_sub_tuple(ast_t* sub, ast_t* super, check_cap_t check_cap,
   return ret;
 }
 
-static bool is_tuple_sub_single(ast_t* sub, ast_t* super, check_cap_t check_cap,
-  errorframe_t* errorf, pass_opt_t* opt)
-{
-  (void)check_cap;
-  (void)opt;
-
-  if(errorf != NULL)
-  {
-    ast_error_frame(errorf, sub,
-      "%s is not a subytpe of %s: the subtype is a tuple",
-      ast_print_type(sub), ast_print_type(super));
-  }
-
-  return false;
-}
-
 static bool is_single_sub_tuple(ast_t* sub, ast_t* super, check_cap_t check_cap,
   errorframe_t* errorf, pass_opt_t* opt)
 {
@@ -690,8 +698,55 @@ static bool is_single_sub_tuple(ast_t* sub, ast_t* super, check_cap_t check_cap,
   if(errorf != NULL)
   {
     ast_error_frame(errorf, sub,
-      "%s is not a subytpe of %s: the supertype is a tuple",
+      "%s is not a subtype of %s: the supertype is a tuple",
       ast_print_type(sub), ast_print_type(super));
+  }
+
+  return false;
+}
+
+static bool is_tuple_sub_nominal(ast_t* sub, ast_t* super,
+  check_cap_t check_cap, errorframe_t* errorf, pass_opt_t* opt)
+{
+  ast_t* super_def = (ast_t*)ast_data(super);
+
+  if(ast_id(super_def) == TK_INTERFACE)
+  {
+    ast_t* super_members = ast_childidx(super_def, 4);
+    pony_assert(ast_id(super_members) == TK_MEMBERS);
+
+    if(ast_childcount(super_members) == 0)
+    {
+      // This is an empty interface, so we let the tuple be a subtype if the
+      // caps of the elements of the tuple are subcaps of the interface cap.
+      for(ast_t* child = ast_child(sub);
+        child != NULL;
+        child = ast_sibling(child))
+      {
+        if(!is_x_sub_x(child, super, check_cap, errorf, opt))
+        {
+          if(errorf != NULL)
+          {
+            ast_error_frame(errorf, child,
+              "%s is not a subtype of %s: %s is not a subtype of %s",
+              ast_print_type(sub), ast_print_type(super),
+              ast_print_type(child), ast_print_type(super));
+          }
+          return false;
+        }
+      }
+
+      return true;
+    }
+  }
+
+  if(errorf != NULL)
+  {
+    ast_error_frame(errorf, sub,
+      "%s is not a subtype of %s: the subtype is a tuple",
+      ast_print_type(sub), ast_print_type(super));
+    ast_error_frame(errorf, super_def, "this might be possible if the supertype"
+      "were an empty interface, such as the Any type.");
   }
 
   return false;
@@ -712,9 +767,13 @@ static bool is_tuple_sub_x(ast_t* sub, ast_t* super, check_cap_t check_cap,
       return is_tuple_sub_tuple(sub, super, check_cap, errorf, opt);
 
     case TK_NOMINAL:
+      return is_tuple_sub_nominal(sub, super, check_cap, errorf, opt);
+
     case TK_TYPEPARAMREF:
+      return is_x_sub_typeparam(sub, super, check_cap, errorf, opt);
+
     case TK_ARROW:
-      return is_tuple_sub_single(sub, super, check_cap, errorf, opt);
+      return is_x_sub_arrow(sub, super, check_cap, errorf, opt);
 
     case TK_FUNTYPE:
     case TK_INFERTYPE:
@@ -738,6 +797,16 @@ static bool is_nominal_sub_entity(ast_t* sub, ast_t* super,
   ast_t* sub_def = (ast_t*)ast_data(sub);
   ast_t* super_def = (ast_t*)ast_data(super);
   bool ret = true;
+
+  if(is_bare(sub) && is_pointer(super))
+  {
+    ast_t* super_typeargs = ast_childidx(super, 2);
+    ast_t* super_typearg = ast_child(super_typeargs);
+
+    // A bare type is a subtype of Pointer[None].
+    if(is_none(super_typearg))
+      return true;
+  }
 
   if(sub_def != super_def)
   {
@@ -769,9 +838,17 @@ static bool is_nominal_sub_structural(ast_t* sub, ast_t* super,
   ast_t* sub_def = (ast_t*)ast_data(sub);
   ast_t* super_def = (ast_t*)ast_data(super);
 
-  // Add an assumption: sub <: super
-  if(push_assume(sub, super, opt))
-    return true;
+  if(is_bare(sub) != is_bare(super))
+  {
+    if(errorf != NULL)
+    {
+      ast_error_frame(errorf, sub,
+        "%s is not a subtype of %s: their bareness differ",
+        ast_print_type(sub), ast_print_type(super));
+    }
+
+    return false;
+  }
 
   bool ret = true;
 
@@ -838,7 +915,6 @@ static bool is_nominal_sub_structural(ast_t* sub, ast_t* super,
     super_member = ast_sibling(super_member);
   }
 
-  pop_assume();
   return ret;
 }
 
@@ -868,6 +944,19 @@ static bool is_nominal_sub_interface(ast_t* sub, ast_t* super,
 static bool nominal_provides_trait(ast_t* type, ast_t* trait,
   check_cap_t check_cap, errorframe_t* errorf, pass_opt_t* opt)
 {
+  pony_assert(!is_bare(trait));
+  if(is_bare(type))
+  {
+    if(errorf != NULL)
+    {
+      ast_error_frame(errorf, type,
+        "%s is not a subtype of %s: their bareness differ",
+        ast_print_type(type), ast_print_type(trait));
+    }
+
+    return false;
+  }
+
   // Get our typeparams and typeargs.
   ast_t* def = (ast_t*)ast_data(type);
   AST_GET_CHILDREN(def, id, typeparams, defcap, traits);
@@ -926,14 +1015,8 @@ static bool is_entity_sub_trait(ast_t* sub, ast_t* super,
   return true;
 }
 
-static bool is_struct_sub_trait(ast_t* sub, ast_t* super, check_cap_t check_cap,
-  errorframe_t* errorf, pass_opt_t* opt)
+static bool is_struct_sub_trait(ast_t* sub, ast_t* super, errorframe_t* errorf)
 {
-  (void)check_cap;
-
-  if(check_assume(sub, super, opt))
-    return true;
-
   struct_cant_be_x(sub, super, errorf, "a trait");
   return false;
 }
@@ -995,7 +1078,7 @@ static bool is_nominal_sub_trait(ast_t* sub, ast_t* super,
       return is_entity_sub_trait(sub, super, check_cap, errorf, opt);
 
     case TK_STRUCT:
-      return is_struct_sub_trait(sub, super, check_cap, errorf, opt);
+      return is_struct_sub_trait(sub, super, errorf);
 
     case TK_TRAIT:
       return is_trait_sub_trait(sub, super, check_cap, errorf, opt);
@@ -1013,8 +1096,13 @@ static bool is_nominal_sub_trait(ast_t* sub, ast_t* super,
 static bool is_nominal_sub_nominal(ast_t* sub, ast_t* super,
   check_cap_t check_cap, errorframe_t* errorf, pass_opt_t* opt)
 {
+  // Add an assumption: sub <: super
+  if(push_assume(sub, super, opt))
+    return true;
+
   // N k <: N' k'
   ast_t* super_def = (ast_t*)ast_data(super);
+  bool ret = false;
 
   switch(ast_id(super_def))
   {
@@ -1022,22 +1110,26 @@ static bool is_nominal_sub_nominal(ast_t* sub, ast_t* super,
     case TK_STRUCT:
     case TK_CLASS:
     case TK_ACTOR:
-      return is_nominal_sub_entity(sub, super, check_cap, errorf, opt);
+      ret = is_nominal_sub_entity(sub, super, check_cap, errorf, opt);
+      break;
 
     case TK_INTERFACE:
-      return is_nominal_sub_interface(sub, super, check_cap, errorf, opt);
+      ret = is_nominal_sub_interface(sub, super, check_cap, errorf, opt);
+      break;
 
     case TK_TRAIT:
-      return is_nominal_sub_trait(sub, super, check_cap, errorf, opt);
+      ret = is_nominal_sub_trait(sub, super, check_cap, errorf, opt);
+      break;
 
-    default: {}
+    default:
+      pony_assert(0);
   }
 
-  pony_assert(0);
-  return false;
+  pop_assume();
+  return ret;
 }
 
-static bool is_nominal_sub_typeparam(ast_t* sub, ast_t* super,
+static bool is_x_sub_typeparam(ast_t* sub, ast_t* super,
   check_cap_t check_cap, errorframe_t* errorf, pass_opt_t* opt)
 {
   // If we want to ignore the cap, we can use the constraint of the type param.
@@ -1057,7 +1149,7 @@ static bool is_nominal_sub_typeparam(ast_t* sub, ast_t* super,
       return false;
     }
 
-    return is_nominal_sub_x(sub, constraint, CHECK_CAP_IGNORE, errorf, opt);
+    return is_x_sub_x(sub, constraint, CHECK_CAP_IGNORE, errorf, opt);
   }
 
   // N k <: lowerbound(A k')
@@ -1077,23 +1169,23 @@ static bool is_nominal_sub_typeparam(ast_t* sub, ast_t* super,
     return false;
   }
 
-  bool ok = is_nominal_sub_x(sub, super_lower, check_cap, errorf, opt);
+  bool ok = is_x_sub_x(sub, super_lower, check_cap, errorf, opt);
   ast_free_unattached(super_lower);
   return ok;
 }
 
-static bool is_nominal_sub_arrow(ast_t* sub, ast_t* super,
+static bool is_x_sub_arrow(ast_t* sub, ast_t* super,
   check_cap_t check_cap, errorframe_t* errorf, pass_opt_t* opt)
 {
   // If we want to ignore the cap, we can ignore the left side of the arrow.
   if(check_cap == CHECK_CAP_IGNORE)
-    return is_nominal_sub_x(sub, ast_childidx(super, 1), CHECK_CAP_IGNORE,
+    return is_x_sub_x(sub, ast_childidx(super, 1), CHECK_CAP_IGNORE,
       errorf, opt);
 
   // If checking for subtype while ignoring the cap fails, then there's no way
   // that it will succeed as a subtype when taking the cap into account.
   // Failing fast can avoid expensive ast_dup operations in viewpoint functions.
-  if(!is_nominal_sub_x(sub, ast_childidx(super, 1), CHECK_CAP_IGNORE, errorf,
+  if(!is_x_sub_x(sub, ast_childidx(super, 1), CHECK_CAP_IGNORE, errorf,
     opt))
     return false;
 
@@ -1114,7 +1206,7 @@ static bool is_nominal_sub_arrow(ast_t* sub, ast_t* super,
     return false;
   }
 
-  bool ok = is_nominal_sub_x(sub, super_lower, check_cap, errorf, opt);
+  bool ok = is_x_sub_x(sub, super_lower, check_cap, errorf, opt);
   ast_free_unattached(super_lower);
   return ok;
 }
@@ -1135,6 +1227,15 @@ static bool is_nominal_sub_x(ast_t* sub, ast_t* super, check_cap_t check_cap,
         return false;
       }
 
+      if(is_bare(sub))
+      {
+        if(errorf != NULL)
+        {
+          ast_error_frame(errorf, sub, "a bare type cannot be in a union type");
+          return false;
+        }
+      }
+
       return is_x_sub_union(sub, super, check_cap, errorf, opt);
     }
 
@@ -1148,6 +1249,16 @@ static bool is_nominal_sub_x(ast_t* sub, ast_t* super, check_cap_t check_cap,
         return false;
       }
 
+      if(is_bare(sub))
+      {
+        if(errorf != NULL)
+        {
+          ast_error_frame(errorf, sub, "a bare type cannot be in an "
+            "intersection type");
+          return false;
+        }
+      }
+
       return is_x_sub_isect(sub, super, check_cap, errorf, opt);
     }
 
@@ -1158,10 +1269,10 @@ static bool is_nominal_sub_x(ast_t* sub, ast_t* super, check_cap_t check_cap,
       return is_nominal_sub_nominal(sub, super, check_cap, errorf, opt);
 
     case TK_TYPEPARAMREF:
-      return is_nominal_sub_typeparam(sub, super, check_cap, errorf, opt);
+      return is_x_sub_typeparam(sub, super, check_cap, errorf, opt);
 
     case TK_ARROW:
-      return is_nominal_sub_arrow(sub, super, check_cap, errorf, opt);
+      return is_x_sub_arrow(sub, super, check_cap, errorf, opt);
 
     case TK_FUNTYPE:
     case TK_INFERTYPE:
@@ -1515,13 +1626,13 @@ static bool is_arrow_sub_x(ast_t* sub, ast_t* super, check_cap_t check_cap,
   return false;
 }
 
-bool is_x_sub_x(ast_t* sub, ast_t* super, check_cap_t check_cap,
+static bool is_x_sub_x(ast_t* sub, ast_t* super, check_cap_t check_cap,
   errorframe_t* errorf, pass_opt_t* opt)
 {
   pony_assert(sub != NULL);
   pony_assert(super != NULL);
 
-  if(ast_id(super) == TK_DONTCARETYPE)
+  if((ast_id(super) == TK_DONTCARETYPE) || (ast_id(sub) == TK_DONTCARETYPE))
     return true;
 
   switch(ast_id(sub))
@@ -1851,6 +1962,52 @@ bool is_known(ast_t* type)
       return is_known(typeparam_constraint(type));
 
     default: {}
+  }
+
+  pony_assert(0);
+  return false;
+}
+
+bool is_bare(ast_t* type)
+{
+  if(type == NULL)
+    return false;
+
+  switch(ast_id(type))
+  {
+    case TK_UNIONTYPE:
+    case TK_ISECTTYPE:
+    case TK_TUPLETYPE:
+    {
+      ast_t* child = ast_child(type);
+      while(child != NULL)
+      {
+        if(is_bare(child))
+          return true;
+
+        child = ast_sibling(child);
+      }
+
+      return false;
+    }
+
+    case TK_NOMINAL:
+    {
+      ast_t* def = (ast_t*)ast_data(type);
+      return ast_has_annotation(def, "ponyint_bare");
+    }
+
+    case TK_ARROW:
+      return is_bare(ast_childidx(type, 1));
+
+    case TK_TYPEPARAMREF:
+    case TK_FUNTYPE:
+    case TK_INFERTYPE:
+    case TK_ERRORTYPE:
+    case TK_DONTCARETYPE:
+      return false;
+
+    default : {}
   }
 
   pony_assert(0);

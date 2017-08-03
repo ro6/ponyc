@@ -8,7 +8,7 @@
 
 #define TEST_ERRORS_1(src, err1) \
   { const char* errs[] = {err1, NULL}; \
-    DO(test_expected_errors(src, "expr", errs)); }
+    DO(test_expected_errors(src, "verify", errs)); }
 
 
 class DontcareTest : public PassTest
@@ -97,7 +97,7 @@ TEST_F(DontcareTest, CannotCallMethodOnDontcare)
     "  fun f() =>\n"
     "    _.foo()";
 
-  TEST_ERRORS_1(src, "can't read from '_'");
+  TEST_ERRORS_1(src, "can't lookup by name on '_'");
 }
 
 
@@ -144,6 +144,24 @@ TEST_F(DontcareTest, CannotUseDontcareInTupleRHS)
     "class C\n"
     "  fun f(x: None) =>\n"
     "    (let a, let b) = (None, _)";
+
+  TEST_ERRORS_1(src, "can't read from '_'");
+}
+
+
+TEST_F(DontcareTest, CannotUseDontcareAsArgumentInCaseExpression)
+{
+  // From issue #1922
+  const char* src =
+    "class C\n"
+    "  new create(i: U32) => None\n"
+    "  fun eq(that: C): Bool => false\n"
+
+    "primitive Foo\n"
+    "  fun apply(c: (C | None)) =>\n"
+    "    match c\n"
+    "    | C(_) => None\n"
+    "    end";
 
   TEST_ERRORS_1(src, "can't read from '_'");
 }

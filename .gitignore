@@ -9,12 +9,16 @@ tags
 *.exe
 *.sublime*
 .*.swp
+.*.swo
 *.dSYM/
+*.psess
+*.vspx
 waf-*
 waf3-*
 .lock-waf*
 tmp.eof
-src/.vs
+tmp.longline
+.vs/
 CppProperties.json
 build/
 work/

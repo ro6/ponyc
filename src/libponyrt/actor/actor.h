@@ -1,10 +1,10 @@
 #ifndef actor_h
 #define actor_h
 
+#include "messageq.h"
 #include "../gc/gc.h"
 #include "../mem/heap.h"
-#include "messageq.h"
-#include <pony.h>
+#include "../pony.h"
 #include <stdint.h>
 #include <stdbool.h>
 #ifndef __cplusplus
@@ -26,11 +26,11 @@ typedef struct pony_actor_t
   pony_type_t* type;
   messageq_t q;
   pony_msg_t* continuation;
-  uint8_t flags;
+  PONY_ATOMIC(uint8_t) flags;
 
   // keep things accessed by other actors on a separate cache line
   alignas(64) heap_t heap; // 52/104 bytes
-  gc_t gc; // 44/80 bytes
+  gc_t gc; // 48/88 bytes
 } pony_actor_t;
 
 bool ponyint_actor_run(pony_ctx_t* ctx, pony_actor_t* actor, size_t batch);

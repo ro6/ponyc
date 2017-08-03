@@ -56,6 +56,13 @@ bool is_result_needed(ast_t* ast)
 
       return is_result_needed(parent);
 
+    case TK_IFTYPE:
+      // Sub/supertype not needed, body needed only if parent needed.
+      if((ast_child(parent) == ast) || (ast_childidx(parent, 1) == ast))
+        return false;
+
+      return is_result_needed(parent);
+
     case TK_REPEAT:
       // Cond needed, body/else needed only if parent needed.
       if(ast_childidx(parent, 1) == ast)
@@ -71,6 +78,7 @@ bool is_result_needed(ast_t* ast)
       return is_result_needed(parent);
 
     case TK_CASES:
+    case TK_IFTYPE_SET:
     case TK_TRY:
     case TK_TRY_NO_CHECK:
     case TK_RECOVER:
@@ -128,6 +136,12 @@ bool is_method_result(typecheck_t* t, ast_t* ast)
         return false;
       break;
 
+    case TK_IFTYPE:
+      // The subtype and the supertype are not the result.
+      if((ast_child(parent) == ast) || (ast_childidx(parent, 1) == ast))
+        return false;
+      break;
+
     case TK_REPEAT:
       // The condition is not the result.
       if(ast_childidx(parent, 1) == ast)
@@ -141,6 +155,7 @@ bool is_method_result(typecheck_t* t, ast_t* ast)
       break;
 
     case TK_CASES:
+    case TK_IFTYPE_SET:
     case TK_RECOVER:
       // These can be results.
       break;
@@ -182,32 +197,6 @@ bool is_typecheck_error(ast_t* type)
 
   if(ast_id(type) == TK_INFERTYPE || ast_id(type) == TK_ERRORTYPE)
     return true;
-
-  return false;
-}
-
-bool is_control_type(ast_t* type)
-{
-  if(type == NULL)
-    return true;
-
-  switch(ast_id(type))
-  {
-    case TK_IF:
-    case TK_TRY:
-    case TK_MATCH:
-    case TK_CASES:
-    case TK_WHILE:
-    case TK_REPEAT:
-    case TK_BREAK:
-    case TK_CONTINUE:
-    case TK_RETURN:
-    case TK_ERROR:
-    case TK_COMPILE_ERROR:
-      return true;
-
-    default: {}
-  }
 
   return false;
 }
@@ -254,7 +243,6 @@ ast_result_t pass_expr(ast_t** astp, pass_opt_t* options)
     case TK_VAR:
     case TK_LET:        r = expr_local(options, ast); break;
     case TK_BREAK:      r = expr_break(options, ast); break;
-    case TK_CONTINUE:   r = expr_continue(options, ast); break;
     case TK_RETURN:     r = expr_return(options, ast); break;
     case TK_IS:
     case TK_ISNT:       r = expr_identity(options, ast); break;
@@ -268,6 +256,7 @@ ast_result_t pass_expr(ast_t** astp, pass_opt_t* options)
     case TK_CALL:       r = expr_call(options, astp); break;
     case TK_IFDEF:
     case TK_IF:         r = expr_if(options, ast); break;
+    case TK_IFTYPE_SET: r = expr_iftype(options, ast); break;
     case TK_WHILE:      r = expr_while(options, ast); break;
     case TK_REPEAT:     r = expr_repeat(options, ast); break;
     case TK_TRY_NO_CHECK:
@@ -279,20 +268,35 @@ ast_result_t pass_expr(ast_t** astp, pass_opt_t* options)
                         r = expr_match_capture(options, ast); break;
     case TK_TUPLE:      r = expr_tuple(options, ast); break;
     case TK_ARRAY:      r = expr_array(options, astp); break;
-    case TK_REFERENCE:  r = expr_reference(options, astp); break;
+
+    case TK_DONTCAREREF:
+                        r = expr_dontcareref(options, ast); break;
+    case TK_TYPEREF:    r = expr_typeref(options, astp); break;
+    case TK_VARREF:
+    case TK_LETREF:     r = expr_localref(options, ast); break;
+    case TK_PARAMREF:   r = expr_paramref(options, ast); break;
+
     case TK_THIS:       r = expr_this(options, ast); break;
     case TK_TRUE:
     case TK_FALSE:      r = expr_literal(options, ast, "Bool"); break;
-    case TK_ERROR:      r = expr_error(options, ast); break;
-    case TK_COMPILE_ERROR:
-                        r = expr_compile_error(options, ast); break;
     case TK_COMPILE_INTRINSIC:
                         r = expr_compile_intrinsic(options, ast); break;
     case TK_LOCATION:   r = expr_location(options, ast); break;
     case TK_ADDRESS:    r = expr_addressof(options, ast); break;
     case TK_DIGESTOF:   r = expr_digestof(options, ast); break;
 
+    case TK_AS:
+      if(!expr_as(options, astp))
+        return AST_FATAL;
+      break;
+
+    case TK_OBJECT:
+      if(!expr_object(options, astp))
+        return AST_FATAL;
+      break;
+
     case TK_LAMBDA:
+    case TK_BARELAMBDA:
       if(!expr_lambda(options, astp))
         return AST_FATAL;
       break;

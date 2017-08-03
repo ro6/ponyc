@@ -1,11 +1,16 @@
 [attr]pony text eol=lf whitespace=tab-in-indent,trailing-space,tabwidth=2
+[attr]win  text eol=crlf whitespace=tab-in-indent,trailing-space,tabwidth=2
 
 *.c pony
 *.cc pony
 *.h pony
 *.pony pony
+*.yml pony
+*.sh pony
+*.bash pony
 
-pony.g export-ignore
+*.bat win
+
 .gitattributes export-ignore
 .gitignore export-ignore
 

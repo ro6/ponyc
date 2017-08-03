@@ -1,7 +1,9 @@
 use @_read[I32](fd: I32, buffer: Pointer[None], bytes_to_read: I32) if windows
-use @read[ISize](fd: I32, buffer: Pointer[None], bytes_to_read: USize) if not windows
+use @read[ISize](fd: I32, buffer: Pointer[None], bytes_to_read: USize)
+  if not windows
 use @_write[I32](fd: I32, buffer: Pointer[None], bytes_to_send: I32) if windows
-use @writev[ISize](fd: I32, buffer: Pointer[None], num_to_send: I32) if not windows
+use @writev[ISize](fd: I32, buffer: Pointer[None], num_to_send: I32)
+  if not windows
 use @_lseeki64[I64](fd: I32, offset: I64, base: I32) if windows
 use @lseek64[I64](fd: I32, offset: I64, base: I32) if linux
 use @lseek[I64](fd: I32, offset: I64, base: I32) if not windows and not linux
@@ -121,7 +123,7 @@ class File
         _errno = _get_error()
       else
         try
-          _FileDes.set_rights(_fd, path, writeable)
+          _FileDes.set_rights(_fd, path, writeable)?
         else
           _errno = FileError
         end
@@ -140,7 +142,7 @@ class File
     if
       not path.caps(FileRead) or
       try
-        let info' = FileInfo(path)
+        let info' = FileInfo(path)?
         info'.directory or info'.pipe
       else
         true
@@ -158,7 +160,7 @@ class File
         _errno = FileError
       else
         try
-          _FileDes.set_rights(_fd, path, writeable)
+          _FileDes.set_rights(_fd, path, writeable)?
         else
           _errno = FileError
         end
@@ -177,7 +179,7 @@ class File
     writeable = from.caps(FileRead)
     _fd = fd
 
-    _FileDes.set_rights(_fd, path, writeable)
+    _FileDes.set_rights(_fd, path, writeable)?
 
   fun errno(): FileErrNo =>
     """
@@ -231,19 +233,22 @@ class File
     while not done do
       result.reserve(len)
 
-      let r = (ifdef windows then
-        @_read(_fd, result.cpointer(offset), bytes_to_read.i32())
-      else
-        @read(_fd, result.cpointer(offset), bytes_to_read)
-      end).isize()
+      let r =
+        (ifdef windows then
+          @_read(_fd, result.cpointer(offset), bytes_to_read.i32())
+        else
+          @read(_fd, result.cpointer(offset), bytes_to_read)
+        end)
+          .isize()
 
       if r < bytes_to_read.isize() then
-        _errno = if r == 0 then
-                   FileEOF
-                 else
-                   _get_error() // error
-                   error
-                 end
+        _errno =
+          if r == 0 then
+             FileEOF
+           else
+             _get_error() // error
+             error
+           end
       else
         // truncate at offset in order to adjust size of string after ffi call
         // and to avoid scanning full array via recalc
@@ -251,7 +256,7 @@ class File
       end
 
       done = try
-        (_errno is FileEOF) or (result.at_offset(offset.isize()) == '\n')
+        (_errno is FileEOF) or (result.at_offset(offset.isize())? == '\n')
       else
         true
       end
@@ -269,12 +274,12 @@ class File
     end
 
     try
-      if result.at_offset(offset.isize()) == '\n' then
+      if result.at_offset(offset.isize())? == '\n' then
         // can't rely on result.size because recalc might find an errant
         // null terminator in the uninitialized memory.
         result.truncate(offset)
 
-        if result.at_offset(-1) == '\r' then
+        if result.at_offset(-1)? == '\r' then
           result.truncate(result.size() - 1)
         end
       end
@@ -288,20 +293,23 @@ class File
     Returns up to len bytes.
     """
     if _fd != -1 then
-      let result = recover Array[U8].>undefined(len) end
+      let result = recover Array[U8] .> undefined(len) end
 
-      let r = (ifdef windows then
-        @_read(_fd, result.cpointer(), len.i32())
-      else
-        @read(_fd, result.cpointer(), len)
-      end).isize()
+      let r =
+        (ifdef windows then
+          @_read(_fd, result.cpointer(), len.i32())
+        else
+          @read(_fd, result.cpointer(), len)
+        end)
+          .isize()
 
       if r < len.isize() then
-        _errno = if r == 0 then
-                   FileEOF
-                 else
-                   _get_error() // error
-                 end
+        _errno =
+          if r == 0 then
+             FileEOF
+           else
+             _get_error() // error
+           end
       end
 
       result.truncate(r.usize())
@@ -325,11 +333,12 @@ class File
       end).isize()
 
       if r < len.isize() then
-        _errno = if r == 0 then
-                   FileEOF
-                 else
-                   _get_error() // error
-                 end
+        _errno =
+          if r == 0 then
+             FileEOF
+           else
+             _get_error() // error
+           end
       end
 
       result.truncate(r.usize())
@@ -383,7 +392,7 @@ class File
     NOTE: Queue'd data will always be written before normal print/write
     requested data
     """
-    _pending_writev.>push(data.cpointer().usize()).>push(data.size())
+    _pending_writev .> push(data.cpointer().usize()) .> push(data.size())
     _pending_writev_total = _pending_writev_total + data.size()
 
   fun ref queuev(data: ByteSeqIter box) =>
@@ -412,7 +421,7 @@ class File
     """
     try
       (let result, let num_written, let new_pending_total) =
-        _write_to_disk()
+        _write_to_disk()?
       _pending_writev_total = new_pending_total
       if _pending_writev_total == 0 then
         _pending_writev.clear()
@@ -424,8 +433,8 @@ class File
           _unsynced_metadata = true
         end
         for d in Range[USize](0, num_written, 1) do
-          _pending_writev.shift()
-          _pending_writev.shift()
+          _pending_writev.shift()?
+          _pending_writev.shift()?
         end
       end
       return result
@@ -453,8 +462,9 @@ class File
     var num_sent: USize = 0
     var bytes_to_send: USize = 0
     var pending_total = _pending_writev_total
-    while writeable and (pending_total > 0)
-      and (_fd != -1) do
+    while
+      writeable and (pending_total > 0) and (_fd != -1)
+    do
       //determine number of bytes and buffers to send
       if (_pending_writev.size().i32()/2) < writev_batch_size then
         num_to_send = _pending_writev.size().i32()/2
@@ -466,7 +476,7 @@ class File
         bytes_to_send = 0
         var counter: I32 = (num_sent.i32()*2) + 1
         repeat
-          bytes_to_send = bytes_to_send + _pending_writev(counter.usize())
+          bytes_to_send = bytes_to_send + _pending_writev(counter.usize())?
           counter = counter + 2
         until counter >= (num_to_send*2) end
       end
@@ -474,7 +484,7 @@ class File
       // Write as much data as possible (vectored i/o).
       // On Windows only write 1 buffer at a time.
       var len = ifdef windows then
-        @_write(_fd, _pending_writev(num_sent*2),
+        @_write(_fd, _pending_writev(num_sent*2)?,
           bytes_to_send.i32()).isize()
       else
         @writev(_fd, _pending_writev.cpointer(num_sent*2),
@@ -629,7 +639,7 @@ class File
     Return a FileInfo for this directory. Raise an error if the fd is invalid
     or if we don't have FileStat permission.
     """
-    FileInfo._descriptor(_fd, path)
+    FileInfo._descriptor(_fd, path)?
 
   fun chmod(mode: FileMode box): Bool =>
     """
@@ -714,7 +724,7 @@ class File
       if (_pending_writev_total > 0) and (_errno is FileOK) then
         // attempt to write any buffered data
         try
-          _write_to_disk()
+          _write_to_disk()?
         end
       end
       if _unsynced_data or _unsynced_metadata then
@@ -747,7 +757,7 @@ class FileLines is Iterator[String]
     _file = file
 
     try
-      _line = file.line()
+      _line = file.line()?
       _next = true
     end
 
@@ -758,7 +768,7 @@ class FileLines is Iterator[String]
     let r = _line
 
     try
-      _line = _file.line()
+      _line = _file.line()?
     else
       _next = false
     end

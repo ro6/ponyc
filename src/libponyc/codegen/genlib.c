@@ -91,6 +91,8 @@ static bool reachable_actors(compile_t* c, ast_t* program)
     package = ast_sibling(package);
   }
 
+  reach_done(c->reach, c->opt);
+
   if(!found)
   {
     errorf(errors, NULL, "no C-API actors found in package '%s'", c->filename);
@@ -140,7 +142,7 @@ static bool link_lib(compile_t* c, const char* file_o)
 
   vcvars_t vcvars;
 
-  if(!vcvars_get(&vcvars, errors))
+  if(!vcvars_get(c, &vcvars, errors))
   {
     errorf(errors, NULL, "unable to link: no vcvars");
     return false;

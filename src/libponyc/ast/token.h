@@ -5,6 +5,7 @@
 
 #include "lexint.h"
 #include "source.h"
+#include "../libponyrt/pony.h"
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -58,6 +59,7 @@ typedef enum token_id
   TK_MOD,
   TK_MOD_TILDE,
   TK_AT,
+  TK_AT_LBRACE,
 
   TK_LSHIFT,
   TK_LSHIFT_TILDE,
@@ -82,6 +84,7 @@ typedef enum token_id
   TK_ISECTTYPE,
   TK_EPHEMERAL,
   TK_ALIASED,
+  TK_SUBTYPE,
 
   TK_QUESTION,
   TK_UNARY_MINUS,
@@ -108,6 +111,7 @@ typedef enum token_id
   TK_ACTOR,
   TK_OBJECT,
   TK_LAMBDA,
+  TK_BARELAMBDA,
 
   TK_AS,
   TK_IS,
@@ -143,6 +147,8 @@ typedef enum token_id
 
   TK_IF,
   TK_IFDEF,
+  TK_IFTYPE,
+  TK_IFTYPE_SET,
   TK_THEN,
   TK_ELSE,
   TK_ELSEIF,
@@ -193,6 +199,7 @@ typedef enum token_id
   TK_THISTYPE,
   TK_FUNTYPE,
   TK_LAMBDATYPE,
+  TK_BARELAMBDATYPE,
   TK_DONTCARETYPE,
   TK_INFERTYPE,
   TK_ERRORTYPE,
@@ -236,6 +243,7 @@ typedef enum token_id
   TK_FVARREF,
   TK_FLETREF,
   TK_EMBEDREF,
+  TK_TUPLEELEMREF,
   TK_VARREF,
   TK_LETREF,
   TK_PARAMREF,
@@ -245,6 +253,8 @@ typedef enum token_id
   TK_FUNAPP,
   TK_BECHAIN,
   TK_FUNCHAIN,
+
+  TK_ANNOTATION,
 
   // Pseudo tokens that never actually exist
   TK_NEWLINE,  // Used by parser macros
@@ -280,6 +290,9 @@ token_t* token_dup_new_id(token_t* token, token_id id);
   * The token argument may be NULL.
   */
 void token_free(token_t* token);
+
+/// Get a pony_type_t for token_t. Should only be used for serialisation.
+pony_type_t* token_pony_type();
 
 
 // Read accessors

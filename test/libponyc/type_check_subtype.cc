@@ -5,6 +5,10 @@
 
 #define TEST_COMPILE(src) DO(test_compile(src, "expr"))
 
+#define TEST_ERRORS_1(src, err1) \
+  { const char* errs[] = {err1, NULL}; \
+    DO(test_expected_errors(src, "expr", errs)); }
+
 class SubTypeTest: public PassTest
 {};
 
@@ -1032,4 +1036,100 @@ TEST_F(SubTypeTest, IsBeSubFunTag)
   ASSERT_TRUE(is_subtype(type_of("a"), type_of("t"), NULL, &opt));
 
   pass_opt_init(&opt);
+}
+
+
+TEST_F(SubTypeTest, IsTypeparamSubIntersect)
+{
+  const char* src =
+    "class B\n"
+    "  fun f[A: (I32 & Real[A])](a: A, b: (I32 & Real[A])) =>\n"
+    "    None";
+
+  TEST_COMPILE(src);
+
+  pass_opt_t opt;
+  pass_opt_init(&opt);
+
+  ASSERT_TRUE(is_subtype(type_of("a"), type_of("b"), NULL, &opt));
+  ASSERT_TRUE(is_subtype(type_of("b"), type_of("a"), NULL, &opt));
+
+  pass_opt_init(&opt);
+}
+
+
+TEST_F(SubTypeTest, TupleValRefSubAnyBox)
+{
+  const char* src =
+    "class C\n"
+
+    "primitive P\n"
+    "  fun apply(x: (C val, C ref)) =>\n"
+    "    let x': Any box = consume x";
+
+  TEST_COMPILE(src);
+}
+
+
+TEST_F(SubTypeTest, TupleTagTagSubAnyTag)
+{
+  const char* src =
+    "class C\n"
+
+    "primitive P\n"
+    "  fun apply(x: (C tag, C tag)) =>\n"
+    "    let x': Any tag = consume x";
+
+  TEST_COMPILE(src);
+}
+
+
+TEST_F(SubTypeTest, TupleTagTagNotSubAnyVal)
+{
+  const char* src =
+    "class C\n"
+
+    "primitive P\n"
+    "  fun apply(x: (C tag, C tag)) =>\n"
+    "    let x': Any val = consume x";
+
+  TEST_ERRORS_1(src, "right side must be a subtype of left side");
+}
+
+
+TEST_F(SubTypeTest, TupleRefValOrValSubAnyBox)
+{
+  const char* src =
+    "class C\n"
+    "class D\n"
+
+    "primitive P\n"
+    "  fun apply(x: (C ref, (C val | D val))) =>\n"
+    "    let x': Any box = consume x";
+
+  TEST_COMPILE(src);
+}
+
+
+TEST_F(SubTypeTest, TupleValTagSubAnyShare)
+{
+  const char* src =
+    "class C[A: Any #share]\n"
+    "primitive P\n"
+    "  fun apply() =>\n"
+    "    C[(String val, String tag)]";
+
+  TEST_COMPILE(src);
+}
+
+
+TEST_F(SubTypeTest, TupleValRefNotSubAnyShare)
+{
+  const char* src =
+    "class C[A: Any #share]\n"
+    "primitive P\n"
+    "  fun apply() =>\n"
+    "    C[(String val, String ref)]";
+
+  TEST_ERRORS_1(src, "type argument is outside its constraint");
 }

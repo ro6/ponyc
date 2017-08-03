@@ -6,7 +6,7 @@
 #include "delta.h"
 #include "../mem/heap.h"
 #include "../ds/stack.h"
-#include <pony.h>
+#include "../pony.h"
 #include <platform.h>
 
 #define GC_INC_MORE 256
@@ -18,7 +18,6 @@ typedef struct gc_t
   uint32_t mark;
   uint32_t rc_mark;
   size_t rc;
-  size_t finalisers;
   objectmap_t local;
   actormap_t foreign;
   deltamap_t* delta;
@@ -74,10 +73,6 @@ bool ponyint_gc_release(gc_t* gc, actorref_t* aref);
 size_t ponyint_gc_rc(gc_t* gc);
 
 deltamap_t* ponyint_gc_delta(gc_t* gc);
-
-void ponyint_gc_register_final(pony_ctx_t* ctx, void* p, pony_final_fn final);
-
-void ponyint_gc_final(pony_ctx_t* ctx, gc_t* gc);
 
 void ponyint_gc_done(gc_t* gc);
 

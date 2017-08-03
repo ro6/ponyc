@@ -27,13 +27,12 @@ bool frame_push(typecheck_t* t, ast_t* ast)
 
   if(ast == NULL)
   {
-    typecheck_frame_t* prev = t->frame;
+    typecheck_frame_t* f = POOL_ALLOC(typecheck_frame_t);
+    memset(f, 0, sizeof(typecheck_frame_t));
+    f->prev = t->frame;
+    t->frame = f;
 
-    pop = push_frame(t);
-    memset(t->frame, 0, sizeof(typecheck_frame_t));
-    t->frame->prev = prev;
-
-    return pop;
+    return true;
   }
 
   switch(ast_id(ast))
@@ -85,6 +84,8 @@ bool frame_push(typecheck_t* t, ast_t* ast)
       t->frame->method_type = NULL;
       t->frame->ffi_type = NULL;
       t->frame->local_type = NULL;
+      t->frame->constraint = NULL;
+      t->frame->iftype_constraint = NULL;
       break;
 
     case TK_CASE:
@@ -112,6 +113,9 @@ bool frame_push(typecheck_t* t, ast_t* ast)
     default:
     {
       ast_t* parent = ast_parent(ast);
+
+      if(parent == NULL)
+        return pop;
 
       switch(ast_id(parent))
       {
@@ -252,11 +256,24 @@ bool frame_push(typecheck_t* t, ast_t* ast)
             pop = push_frame(t);
             t->frame->ifdef_cond = cond;
             t->frame->ifdef_clause = body;
-          }
-          else if(else_clause == ast) {
+          } else if(else_clause == ast) {
             pop = push_frame(t);
             t->frame->ifdef_cond = else_cond;
             t->frame->ifdef_clause = else_clause;
+          }
+          break;
+        }
+
+        case TK_IFTYPE:
+        {
+          AST_GET_CHILDREN(parent, l_type, r_type, body);
+
+          pop = push_frame(t);
+          if(r_type == ast)
+          {
+            t->frame->iftype_constraint = ast;
+          } else if(body == ast) {
+            t->frame->iftype_body = ast;
           }
           break;
         }

@@ -26,12 +26,19 @@ interface TCPConnectionNotify
     """
     None
 
-  fun ref connect_failed(conn: TCPConnection ref) =>
+  fun ref connect_failed(conn: TCPConnection ref)
     """
     Called when we have failed to connect to all possible addresses for the
     server. At this point, the connection will never be established.
+
+    It is expected to implement proper error handling. You need to opt in to
+    ignoring errors, which can be implemented like this:
+
+    ```pony
+    fun ref connect_failed(conn: TCPConnection ref) =>
+      None
+    ```
     """
-    None
 
   fun ref auth_failed(conn: TCPConnection ref) =>
     """
@@ -58,12 +65,20 @@ interface TCPConnectionNotify
     """
     data
 
-  fun ref received(conn: TCPConnection ref, data: Array[U8] iso): Bool =>
+  fun ref received(
+    conn: TCPConnection ref,
+    data: Array[U8] iso,
+    times: USize)
+    : Bool
+  =>
     """
     Called when new data is received on the connection. Return true if you
     want to continue receiving messages without yielding until you read
     max_size on the TCPConnection. Return false to cause the TCPConnection
     to yield now.
+
+    Includes the number of times during the current behavior, that received has
+    been called. This allows the notifier to end reads on a regular basis.
     """
     true
 

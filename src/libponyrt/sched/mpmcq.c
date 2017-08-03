@@ -40,10 +40,8 @@ void ponyint_mpmcq_init(mpmcq_t* q)
 
   atomic_store_explicit(&q->head, node, memory_order_relaxed);
 #ifdef PLATFORM_IS_X86
-  PONY_ABA_PROTECTED(mpmcq_node_t*) tail;
-  tail.object = node;
-  tail.counter = 0;
-  bigatomic_store_explicit(&q->tail, tail, memory_order_relaxed);
+  q->tail.object = node;
+  q->tail.counter = 0;
 #else
   atomic_store_explicit(&q->tail, node, memory_order_relaxed);
 #endif
@@ -53,11 +51,8 @@ void ponyint_mpmcq_destroy(mpmcq_t* q)
 {
   atomic_store_explicit(&q->head, NULL, memory_order_relaxed);
 #ifdef PLATFORM_IS_X86
-  PONY_ABA_PROTECTED(mpmcq_node_t*) tail = bigatomic_load_explicit(&q->tail,
-    memory_order_relaxed);
-  node_free(tail.object);
-  tail.object = NULL;
-  bigatomic_store_explicit(&q->tail, tail, memory_order_relaxed);
+  node_free(q->tail.object);
+  q->tail.object = NULL;
 #else
   mpmcq_node_t* tail = atomic_load_explicit(&q->tail, memory_order_relaxed);
   node_free(tail);
@@ -93,10 +88,14 @@ void ponyint_mpmcq_push_single(mpmcq_t* q, void* data)
 void* ponyint_mpmcq_pop(mpmcq_t* q)
 {
 #ifdef PLATFORM_IS_X86
-  PONY_ABA_PROTECTED(mpmcq_node_t*) cmp = bigatomic_load_explicit(&q->tail,
-    memory_order_relaxed);
-  PONY_ABA_PROTECTED(mpmcq_node_t*) xchg;
+  PONY_ABA_PROTECTED_PTR(mpmcq_node_t) cmp;
+  PONY_ABA_PROTECTED_PTR(mpmcq_node_t) xchg;
   mpmcq_node_t* tail;
+  // Load the tail non-atomically. If object and counter are out of sync, we'll
+  // do an additional CAS iteration which isn't less efficient than doing an
+  // atomic initial load.
+  cmp.object = q->tail.object;
+  cmp.counter = q->tail.counter;
 #else
   mpmcq_node_t* tail = atomic_load_explicit(&q->tail, memory_order_relaxed);
 #endif
@@ -117,10 +116,13 @@ void* ponyint_mpmcq_pop(mpmcq_t* q)
 #ifdef PLATFORM_IS_X86
     xchg.object = next;
     xchg.counter = cmp.counter + 1;
-  } while(!bigatomic_compare_exchange_weak_explicit(&q->tail, &cmp, xchg,
+#endif
+  }
+#ifdef PLATFORM_IS_X86
+  while(!bigatomic_compare_exchange_weak_explicit(&q->tail, &cmp, xchg,
     memory_order_relaxed, memory_order_relaxed));
 #else
-  } while(!atomic_compare_exchange_weak_explicit(&q->tail, &tail, next,
+  while(!atomic_compare_exchange_weak_explicit(&q->tail, &tail, next,
     memory_order_relaxed, memory_order_relaxed));
 #endif
 

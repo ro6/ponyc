@@ -12,7 +12,7 @@
 #include <string.h>
 #include <stdio.h>
 
-#define SCHED_BATCH 100
+#define PONY_SCHED_BATCH 100
 
 static DECLARE_THREAD_FN(run_thread);
 
@@ -284,7 +284,7 @@ static void run(scheduler_t* sched)
     }
 
     // Run the current actor and get the next actor.
-    bool reschedule = ponyint_actor_run(&sched->ctx, actor, SCHED_BATCH);
+    bool reschedule = ponyint_actor_run(&sched->ctx, actor, PONY_SCHED_BATCH);
     pony_actor_t* next = pop_global(sched);
 
     if(reschedule)
@@ -336,6 +336,7 @@ static DECLARE_THREAD_FN(run_thread)
   this_scheduler = sched;
   ponyint_cpu_affinity(sched->cpu);
   run(sched);
+  ponyint_pool_thread_cleanup();
 
   return 0;
 }
@@ -369,6 +370,8 @@ static void ponyint_sched_shutdown()
 pony_ctx_t* ponyint_sched_init(uint32_t threads, bool noyield, bool nopin,
   bool pinasio)
 {
+  pony_register_thread();
+
   use_yield = !noyield;
 
   // If no thread count is specified, use the available physical core count.
@@ -391,16 +394,15 @@ pony_ctx_t* ponyint_sched_init(uint32_t threads, bool noyield, bool nopin,
     ponyint_mpmcq_init(&scheduler[i].q);
   }
 
-  this_scheduler = &scheduler[0];
   ponyint_mpmcq_init(&inject);
   ponyint_asio_init(asio_cpu);
 
-  return &scheduler[0].ctx;
+  return pony_ctx();
 }
 
 bool ponyint_sched_start(bool library)
 {
-  this_scheduler = NULL;
+  pony_register_thread();
 
   if(!ponyint_asio_start())
     return false;
@@ -409,11 +411,6 @@ bool ponyint_sched_start(bool library)
 
   DTRACE0(RT_START);
   uint32_t start = 0;
-
-  if(library)
-  {
-    pony_register_thread();
-  }
 
   for(uint32_t i = start; i < scheduler_count; i++)
   {
@@ -453,7 +450,7 @@ uint32_t ponyint_sched_cores()
   return scheduler_count;
 }
 
-void pony_register_thread()
+PONY_API void pony_register_thread()
 {
   if(this_scheduler != NULL)
     return;
@@ -462,6 +459,17 @@ void pony_register_thread()
   this_scheduler = POOL_ALLOC(scheduler_t);
   memset(this_scheduler, 0, sizeof(scheduler_t));
   this_scheduler->tid = ponyint_thread_self();
+}
+
+PONY_API void pony_unregister_thread()
+{
+  if(this_scheduler == NULL)
+    return;
+
+  POOL_FREE(scheduler_t, this_scheduler);
+  this_scheduler = NULL;
+
+  ponyint_pool_thread_cleanup();
 }
 
 PONY_API pony_ctx_t* pony_ctx()

@@ -11,9 +11,11 @@ class Cycle[A] is Iterator[A]
   Print the numbers 1 through 4 forever.
 
   ```pony
+  use "itertools"
+
   actor Main
     new create(env: Env) =>
-      let i1 = [as I32: 1, 2, 3, 4]
+      let i1 = [as I32: 1; 2; 3; 4]
       for x in Cycle[I32](i1.values()) do
         env.out.print(x.string())
       end
@@ -33,8 +35,8 @@ class Cycle[A] is Iterator[A]
   fun ref next(): A ? =>
     if _first_time_through then
       if _iter.has_next() then
-        _store.push(_iter.next())
-        return _store(_store.size() - 1)
+        _store.push(_iter.next()?)
+        return _store(_store.size() - 1)?
       end
 
       _first_time_through = false
@@ -44,4 +46,4 @@ class Cycle[A] is Iterator[A]
       _store_iter.rewind()
     end
 
-    _store_iter.next()
+    _store_iter.next()?

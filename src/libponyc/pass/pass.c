@@ -8,9 +8,11 @@
 #include "names.h"
 #include "flatten.h"
 #include "traits.h"
+#include "refer.h"
 #include "expr.h"
 #include "verify.h"
 #include "finalisers.h"
+#include "serialisers.h"
 #include "docgen.h"
 #include "../codegen/codegen.h"
 #include "../../libponyrt/mem/pool.h"
@@ -53,6 +55,7 @@ const char* pass_name(pass_id pass)
     case PASS_FLATTEN: return "flatten";
     case PASS_TRAITS: return "traits";
     case PASS_DOCS: return "docs";
+    case PASS_REFER: return "refer";
     case PASS_EXPR: return "expr";
     case PASS_VERIFY: return "verify";
     case PASS_FINALISER: return "final";
@@ -103,9 +106,9 @@ void pass_opt_done(pass_opt_t* options)
   errors_free(options->check.errors);
   options->check.errors = NULL;
 
-  // Pop all the typechecker frames.
-  while(options->check.frame != NULL)
-    frame_pop(&options->check);
+  // Pop the initial typechecker frame.
+  frame_pop(&options->check);
+  pony_assert(options->check.frame == NULL);
 
   if(options->print_stats)
   {
@@ -226,6 +229,10 @@ static bool ast_passes(ast_t** astp, pass_opt_t* options, pass_id last)
   if(options->docs && ast_id(*astp) == TK_PROGRAM)
     generate_docs(*astp, options);
 
+  if(!visit_pass(astp, options, last, &r, PASS_REFER, pass_pre_refer,
+    pass_refer))
+    return r;
+
   if(!visit_pass(astp, options, last, &r, PASS_EXPR, pass_pre_expr, pass_expr))
     return r;
 
@@ -236,6 +243,9 @@ static bool ast_passes(ast_t** astp, pass_opt_t* options, pass_id last)
     return true;
 
   if(!pass_finalisers(*astp, options))
+    return false;
+
+  if (!pass_serialisers(*astp, options))
     return false;
 
   if(options->check_tree)
@@ -250,7 +260,7 @@ bool ast_passes_program(ast_t* ast, pass_opt_t* options)
 }
 
 
-bool ast_passes_type(ast_t** astp, pass_opt_t* options)
+bool ast_passes_type(ast_t** astp, pass_opt_t* options, pass_id last_pass)
 {
   ast_t* ast = *astp;
 
@@ -267,7 +277,7 @@ bool ast_passes_type(ast_t** astp, pass_opt_t* options)
   frame_push(&options->check, package);
   frame_push(&options->check, module);
 
-  bool ok = ast_passes(astp, options, options->program_pass);
+  bool ok = ast_passes(astp, options, last_pass);
 
   frame_pop(&options->check);
   frame_pop(&options->check);
@@ -292,7 +302,7 @@ bool generate_passes(ast_t* program, pass_opt_t* options)
 }
 
 
-static void record_ast_pass(ast_t* ast, pass_id pass)
+void ast_pass_record(ast_t* ast, pass_id pass)
 {
   pony_assert(ast != NULL);
 
@@ -340,7 +350,11 @@ ast_result_t ast_visit(ast_t** ast, ast_visit_t pre, ast_visit_t post,
         break;
 
       case AST_FATAL:
-        record_ast_pass(*ast, pass);
+        ast_pass_record(*ast, pass);
+
+        if(pop)
+          frame_pop(t);
+
         return AST_FATAL;
     }
   }
@@ -366,7 +380,11 @@ ast_result_t ast_visit(ast_t** ast, ast_visit_t pre, ast_visit_t post,
           break;
 
         case AST_FATAL:
-          record_ast_pass(*ast, pass);
+          ast_pass_record(*ast, pass);
+
+          if(pop)
+            frame_pop(t);
+
           return AST_FATAL;
       }
 
@@ -387,7 +405,11 @@ ast_result_t ast_visit(ast_t** ast, ast_visit_t pre, ast_visit_t post,
         break;
 
       case AST_FATAL:
-        record_ast_pass(*ast, pass);
+        ast_pass_record(*ast, pass);
+
+        if(pop)
+          frame_pop(t);
+
         return AST_FATAL;
     }
   }
@@ -395,7 +417,7 @@ ast_result_t ast_visit(ast_t** ast, ast_visit_t pre, ast_visit_t post,
   if(pop)
     frame_pop(t);
 
-  record_ast_pass(*ast, pass);
+  ast_pass_record(*ast, pass);
   return ret;
 }
 

@@ -11,13 +11,23 @@ interface UDPNotify
     """
     None
 
-  fun ref not_listening(sock: UDPSocket ref) =>
+  fun ref not_listening(sock: UDPSocket ref)
     """
     Called if it wasn't possible to bind the socket to an address.
-    """
-    None
 
-  fun ref received(sock: UDPSocket ref, data: Array[U8] iso, from: NetAddress)
+    It is expected to implement proper error handling. You need to opt in to
+    ignoring errors, which can be implemented like this:
+
+    ```pony
+    fun ref not_listening(sock: UDPSocket ref) =>
+      None
+    ```
+    """
+
+  fun ref received(
+    sock: UDPSocket ref,
+    data: Array[U8] iso,
+    from: NetAddress)
   =>
     """
     Called when new data is received on the socket.

@@ -1,6 +1,9 @@
 use "files"
 
-use @SSL_CTX_ctrl[ILong](ctx: Pointer[_SSLContext] tag, op: I32, arg: ILong,
+use @SSL_CTX_ctrl[ILong](
+  ctx: Pointer[_SSLContext] tag,
+  op: I32,
+  arg: ILong,
   parg: Pointer[None])
 
 primitive _SSLContext
@@ -33,7 +36,7 @@ class val SSLContext
 
     try
       set_ciphers(
-        "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-SHA384:ECDHE-RSA-AES256-SHA384:ECDHE-ECDSA-AES128-SHA256:ECDHE-RSA-AES128-SHA256")
+        "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-SHA384:ECDHE-RSA-AES256-SHA384:ECDHE-ECDSA-AES128-SHA256:ECDHE-RSA-AES128-SHA256")?
     end
 
   fun client(hostname: String = ""): SSL iso^ ? =>
@@ -43,7 +46,7 @@ class val SSLContext
     """
     let ctx = _ctx
     let verify = _client_verify
-    recover SSL._create(ctx, false, verify, hostname) end
+    recover SSL._create(ctx, false, verify, hostname)? end
 
   fun server(): SSL iso^ ? =>
     """
@@ -51,7 +54,7 @@ class val SSLContext
     """
     let ctx = _ctx
     let verify = _server_verify
-    recover SSL._create(ctx, true, verify) end
+    recover SSL._create(ctx, true, verify)? end
 
   fun ref set_cert(cert: FilePath, key: FilePath) ? =>
     """
@@ -59,20 +62,22 @@ class val SSLContext
     Servers must set this. For clients, it is optional.
     """
     if
-      _ctx.is_null() or
-      (cert.path.size() == 0) or
-      (key.path.size() == 0) or
-      (0 == @SSL_CTX_use_certificate_chain_file[I32](
-        _ctx, cert.path.cstring())) or
-      (0 == @SSL_CTX_use_PrivateKey_file[I32](
-        _ctx, key.path.cstring(), I32(1))) or
-      (0 == @SSL_CTX_check_private_key[I32](_ctx))
+      _ctx.is_null()
+        or (cert.path.size() == 0)
+        or (key.path.size() == 0)
+        or (0 == @SSL_CTX_use_certificate_chain_file[I32](
+          _ctx, cert.path.cstring()))
+        or (0 == @SSL_CTX_use_PrivateKey_file[I32](
+          _ctx, key.path.cstring(), I32(1)))
+        or (0 == @SSL_CTX_check_private_key[I32](_ctx))
     then
       error
     end
 
-  fun ref set_authority(file: (FilePath | None),
-    path: (FilePath | None) = None) ?
+  fun ref set_authority(
+    file: (FilePath | None),
+    path: (FilePath | None) = None)
+    ?
   =>
     """
     Use a PEM file and/or a directory of PEM files to specify certificate
@@ -87,9 +92,9 @@ class val SSLContext
     let p = if ps.size() > 0 then ps.cstring() else Pointer[U8] end
 
     if
-      _ctx.is_null() or
-      (f.is_null() and p.is_null()) or
-      (0 == @SSL_CTX_load_verify_locations[I32](_ctx, f, p))
+      _ctx.is_null()
+        or (f.is_null() and p.is_null())
+        or (0 == @SSL_CTX_load_verify_locations[I32](_ctx, f, p))
     then
       error
     end
@@ -100,9 +105,8 @@ class val SSLContext
     if the cipher list is invalid.
     """
     if
-      _ctx.is_null() or
-      (0 == @SSL_CTX_set_cipher_list[I32](_ctx,
-        ciphers.cstring()))
+      _ctx.is_null()
+        or (0 == @SSL_CTX_set_cipher_list[I32](_ctx, ciphers.cstring()))
     then
       error
     end

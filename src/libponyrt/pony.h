@@ -41,12 +41,14 @@ typedef struct pony_ctx_t pony_ctx_t;
  * dispatch. The index is a pool allocator index and is used for freeing the
  * message. The next pointer should not be read or set.
  */
-typedef struct pony_msg_t
+typedef struct pony_msg_t pony_msg_t;
+
+struct pony_msg_t
 {
   uint32_t index;
   uint32_t id;
-  PONY_ATOMIC(struct pony_msg_t*) next;
-} pony_msg_t;
+  PONY_ATOMIC(pony_msg_t*) next;
+};
 
 /// Convenience message for sending an integer.
 typedef struct pony_msgi_t
@@ -78,6 +80,22 @@ typedef void (*pony_trace_fn)(pony_ctx_t* ctx, void* p);
 typedef void (*pony_serialise_fn)(pony_ctx_t* ctx, void* p, void* addr,
   size_t offset, int m);
 
+/** Serialise Space function.
+ *
+ * Each class may supply a group of custom serialisation function. This
+ * function returns the amount of extra space that the object needs for
+ * custom serialisation.
+ */
+typedef size_t (*pony_custom_serialise_space_fn)(void* p);
+
+/** Custom Deserialise function.
+ *
+ * Each class may supply a group of custom serialisation function. This
+ * function takes a pointer to a byte array and does whatever user-defined
+ * deserialization.
+ */
+typedef size_t (*pony_custom_deserialise_fn)(void* p, void *addr);
+
 /** Dispatch function.
  *
  * Each actor has a dispatch function that is invoked when the actor handles
@@ -98,7 +116,6 @@ typedef const struct _pony_type_t
 {
   uint32_t id;
   uint32_t size;
-  uint32_t trait_count;
   uint32_t field_count;
   uint32_t field_offset;
   void* instance;
@@ -106,10 +123,12 @@ typedef const struct _pony_type_t
   pony_trace_fn serialise_trace;
   pony_serialise_fn serialise;
   pony_trace_fn deserialise;
+  pony_custom_serialise_space_fn custom_serialise_space;
+  pony_custom_deserialise_fn custom_deserialise;
   pony_dispatch_fn dispatch;
   pony_final_fn final;
   uint32_t event_notify;
-  uint32_t** traits;
+  uintptr_t** traits;
   void* fields;
   void* vtable;
 } pony_type_t;
@@ -118,12 +137,13 @@ typedef const struct _pony_type_t
  *
  * 56 bytes: initial header, not including the type descriptor
  * 52/104 bytes: heap
- * 44/80 bytes: gc
+ * 48/88 bytes: gc
+ * 28/0 bytes: padding to 64 bytes, ignored
  */
 #if INTPTR_MAX == INT64_MAX
-#  define PONY_ACTOR_PAD_SIZE 256
+#  define PONY_ACTOR_PAD_SIZE 248
 #elif INTPTR_MAX == INT32_MAX
-#  define PONY_ACTOR_PAD_SIZE 164
+#  define PONY_ACTOR_PAD_SIZE 160
 #endif
 
 typedef struct pony_actor_pad_t
@@ -209,8 +229,14 @@ PONY_API ATTRIBUTE_MALLOC void* pony_realloc(pony_ctx_t* ctx, void* p, size_t si
  * Attach a finaliser that will be run on memory when it is collected. Such
  * memory cannot be safely realloc'd.
  */
-PONY_API ATTRIBUTE_MALLOC void* pony_alloc_final(pony_ctx_t* ctx, size_t size,
-  pony_final_fn final);
+PONY_API ATTRIBUTE_MALLOC void* pony_alloc_final(pony_ctx_t* ctx, size_t size);
+
+/// Allocate using a HEAP_INDEX instead of a size in bytes.
+PONY_API ATTRIBUTE_MALLOC void* pony_alloc_small_final(pony_ctx_t* ctx,
+  uint32_t sizeclass);
+
+/// Allocate when we know it's larger than HEAP_MAX.
+PONY_API ATTRIBUTE_MALLOC void* pony_alloc_large_final(pony_ctx_t* ctx, size_t size);
 
 /// Trigger GC next time the current actor is scheduled
 PONY_API void pony_triggergc(pony_actor_t* actor);
@@ -361,10 +387,18 @@ PONY_API int pony_start(bool library, bool language_features);
  * done before calling pony_ctx(), and before calling any Pony code from the
  * thread.
  *
- * The thread that calls pony_start() is automatically registered. It's safe,
- * but not necessary, to call this more than once.
+ * Threads that call pony_init() or pony_start() are automatically registered.
+ * It's safe, but not necessary, to call this more than once.
  */
 PONY_API void pony_register_thread();
+
+/** Unregisters a non-scheduler thread.
+ *
+ * Clean up the runtime context allocated when registering a thread with
+ * pony_register_thread(). This should never be called from a thread owned by
+ * the Pony runtime.
+ */
+PONY_API void pony_unregister_thread();
 
 /** Signals that the pony runtime may terminate.
  *

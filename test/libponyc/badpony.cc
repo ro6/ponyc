@@ -50,7 +50,6 @@ TEST_F(BadPonyTest, ClassInOtherClassProvidesList)
   TEST_ERRORS_1(src, "can only provide traits and interfaces");
 }
 
-
 TEST_F(BadPonyTest, TypeParamMissingForTypeInProvidesList)
 {
   // From issue #219
@@ -219,8 +218,7 @@ TEST_F(BadPonyTest, TupleFieldReassign)
     "    var foo: (U64, String) = (42, \"foo\")\n"
     "    foo._2 = \"bar\"";
 
-  TEST_ERRORS_2(src, "can't assign to an element of a tuple",
-                     "left side must be something that can be assigned to");
+  TEST_ERRORS_1(src, "can't assign to an element of a tuple");
 }
 
 TEST_F(BadPonyTest, WithBlockTypeInference)
@@ -258,12 +256,13 @@ TEST_F(BadPonyTest, CircularTypeInfer)
   // From issue #1334
   const char* src =
     "actor Main\n"
-    "  new create(env: Env) =>\n"
-    "    let x = x.create()\n"
-    "    let y = y.create()";
+      "new create(env: Env) =>\n"
+        "let x = x.create()\n"
+        "let y = y.create()";
 
-  TEST_ERRORS_2(src, "cannot infer type of x",
-                     "cannot infer type of y");
+  TEST_ERRORS_2(src,
+    "can't use an undefined variable in an expression",
+    "can't use an undefined variable in an expression");
 }
 
 TEST_F(BadPonyTest, CallConstructorOnTypeIntersection)
@@ -310,33 +309,10 @@ TEST_F(BadPonyTest, IndexArrayWithBrackets)
   const char* src =
     "actor Main\n"
       "new create(env: Env) =>\n"
-        "let xs = [as I64: 1, 2, 3]\n"
+        "let xs = [as I64: 1; 2; 3]\n"
         "xs[1]";
 
   TEST_ERRORS_1(src, "Value formal parameters not yet supported");
-}
-
-TEST_F(BadPonyTest, MatchUnionOfDifferentCaps)
-{
-  // From issue #1506
-  const char* src =
-    "interface box Foo\n"
-      "fun foo(): None\n"
-
-    "interface ref Bar\n"
-      "fun ref bar(): None\n"
-
-    "actor Main\n"
-      "new create(env: Env) => None\n"
-
-      "fun apply(x: (Foo | Bar)) =>\n"
-        "match x\n"
-        "| let f: Foo => f.foo()\n"
-        "| let b: Bar => b.bar()\n"
-        "end";
-
-  TEST_ERRORS_1(src,
-    "match type may not be a union of types with different capabilities");
 }
 
 TEST_F(BadPonyTest, ShadowingBuiltinTypeParameter)
@@ -411,4 +387,454 @@ TEST_F(BadPonyTest, RefCapViolationViaCapAnyTypeParameter)
         "x.boom()";
 
   TEST_ERRORS_1(src, "receiver type is not a subtype of target type");
+}
+
+TEST_F(BadPonyTest, TypeParamArrowClass)
+{
+  // From issue #1687
+  const char* src =
+    "class C1\n"
+
+    "trait Test[A]\n"
+      "fun foo(a: A): A->C1";
+
+  TEST_COMPILE(src);
+}
+
+TEST_F(BadPonyTest, ArrowTypeParamInTypeConstraint)
+{
+  // From issue #1694
+  const char* src =
+    "trait T1[A: B->A, B]\n"
+    "trait T2[A: box->B, B]";
+
+  TEST_ERRORS_2(src,
+    "arrow types can't be used as type constraints",
+    "arrow types can't be used as type constraints");
+}
+
+TEST_F(BadPonyTest, ArrowTypeParamInMethodConstraint)
+{
+  // From issue #1809
+  const char* src =
+    "class Foo\n"
+    "  fun foo[X: box->Y, Y](x: X) => None";
+
+  TEST_ERRORS_1(src,
+    "arrow types can't be used as type constraints");
+}
+
+TEST_F(BadPonyTest, AnnotatedIfClause)
+{
+  // From issue #1751
+  const char* src =
+    "actor Main\n"
+    "  new create(env: Env) =>\n"
+    "    if \\likely\\ U32(1) == 1 then\n"
+    "      None\n"
+    "    end\n";
+
+  TEST_COMPILE(src);
+}
+
+TEST_F(BadPonyTest, CapSubtypeInConstrainSubtyping)
+{
+  // From PR #1816
+  const char* src =
+    "trait T\n"
+    "  fun alias[X: Any iso](x: X!): X^\n"
+    "class C is T\n"
+    "  fun alias[X: Any tag](x: X!): X^ => x\n";
+
+  TEST_ERRORS_1(src,
+    "type does not implement its provides list");
+}
+
+TEST_F(BadPonyTest, ObjectInheritsLaterTraitMethodWithParameter)
+{
+  // From issue #1715
+  const char* src =
+    "actor Main\n"
+    "  new create(env: Env) =>\n"
+    "    object is T end\n"
+
+    "trait T\n"
+    "  fun apply(n: I32): Bool =>\n"
+    "    n == 0\n";
+
+  TEST_COMPILE(src);
+}
+
+TEST_F(BadPonyTest, AddressofMissingTypearg)
+{
+  const char* src =
+    "actor Main\n"
+    "  new create(env: Env) =>\n"
+    "    @foo[None](addressof fn)\n"
+
+    "  fun fn[A]() => None";
+
+  TEST_ERRORS_1(src,
+    "not enough type arguments");
+}
+
+TEST_F(BadPonyTest, ThisDotFieldRef)
+{
+  // From issue #1865
+  const char* src =
+    "actor Main\n"
+    "  let f: U8\n"
+    "  new create(env: Env) =>\n"
+    "    this.f = 1\n";
+
+  TEST_COMPILE(src);
+}
+
+TEST_F(BadPonyTest, CapSetInConstraintTypeParam)
+{
+  const char* src =
+    "class A[X]\n"
+    "class B[X: A[Any #read]]\n";
+
+  TEST_ERRORS_1(src,
+    "a capability set can only appear in a type constraint");
+}
+
+TEST_F(BadPonyTest, MatchCasePatternConstructorTooFewArguments)
+{
+  const char* src =
+    "class C\n"
+    "  new create(key: String) => None\n"
+
+    "primitive Foo\n"
+    "  fun apply(c: (C | None)) =>\n"
+    "    match c\n"
+    "    | C => None\n"
+    "    end";
+
+  TEST_ERRORS_1(src, "not enough arguments");
+}
+
+TEST_F(BadPonyTest, ThisDotWhereDefIsntInTheTrait)
+{
+  // From issue #1878
+  const char* src =
+    "trait T\n"
+    "  fun foo(): USize => this.u\n"
+
+    "class C is T\n"
+    "  var u: USize = 0\n";
+
+  TEST_ERRORS_1(src,
+    "can't find declaration of 'u'");
+}
+
+TEST_F(BadPonyTest, DontCareTypeInTupleTypeOfIfBlockValueUnused)
+{
+  // From issue #1896
+  const char* src =
+    "actor Main\n"
+    "  new create(env: Env) =>\n"
+    "    if true then\n"
+    "      (var a, let _) = test()\n"
+    "    end\n"
+    "  fun test(): (U32, U32) =>\n"
+    "    (1, 2)\n";
+
+  TEST_COMPILE(src);
+}
+
+TEST_F(BadPonyTest, ExhaustiveMatchCasesJumpAway)
+{
+  // From issue #1898
+  const char* src =
+    "primitive Foo\n"
+    "  fun apply(b: Bool) =>\n"
+    "    if true then\n"
+    "      match b\n"
+    "      | let b': Bool => return\n"
+    "      end\n"
+    "    end";
+
+  TEST_COMPILE(src);
+}
+
+TEST_F(BadPonyTest, CallArgTypeErrorInsideTuple)
+{
+  // From issue #1895
+  const char* src =
+    "actor Main\n"
+    "  new create(env: Env) =>\n"
+    "    (\"\", foo([\"\"]))\n"
+    "  fun foo(x: Array[USize]) => None";
+
+  TEST_ERRORS_1(src, "argument not a subtype of parameter");
+}
+
+TEST_F(BadPonyTest, NonExistFieldReferenceInConstructor)
+{
+  // From issue #1932
+  const char* src =
+    "actor Main\n"
+    "  new create(env: Env) =>\n"
+    "    this.x = None";
+
+  TEST_ERRORS_2(src,
+    "can't find declaration of 'x'",
+    "left side must be something that can be assigned to");
+}
+
+TEST_F(BadPonyTest, TypeArgErrorInsideReturn)
+{
+  const char* src =
+    "primitive P[A]\n"
+
+    "primitive Foo\n"
+    "  fun apply(): (P[None], U8) =>\n"
+    "    if true then\n"
+    "      return (P, 0)\n"
+    "    end\n"
+    "    (P[None], 1)";
+
+  TEST_ERRORS_1(src, "not enough type arguments");
+}
+
+TEST_F(BadPonyTest, FieldReferenceInDefaultArgument)
+{
+  const char* src =
+    "actor Main\n"
+    "  let _env: Env\n"
+    "  new create(env: Env) =>\n"
+    "    _env = env\n"
+    "    foo()\n"
+    "  fun foo(env: Env = _env) =>\n"
+    "    None";
+
+  TEST_ERRORS_1(src, "can't reference 'this' in a default argument");
+}
+
+TEST_F(BadPonyTest, DefaultArgScope)
+{
+  const char* src =
+    "actor A\n"
+    "  fun foo(x: None = (let y = None; y)) =>\n"
+    "    y";
+
+  TEST_ERRORS_1(src, "can't find declaration of 'y'");
+}
+
+TEST_F(BadPonyTest, GenericMain)
+{
+  const char* src =
+    "actor Main[X]\n"
+    "  new create(env: Env) => None";
+
+  TEST_ERRORS_1(src, "the Main actor cannot have type parameters");
+}
+
+TEST_F(BadPonyTest, LambdaParamNoType)
+{
+  // From issue #2010
+  const char* src =
+    "actor Main\n"
+    "  new create(e: Env) =>\n"
+    "    {(x: USize, y): USize => x }";
+
+  TEST_ERRORS_1(src, "a lambda parameter must specify a type");
+}
+
+TEST_F(BadPonyTest, AsBadCap)
+{
+  const char* src =
+    "actor Main\n"
+    "  new create(env: Env) =>\n"
+    "    let v: I64 = 3\n"
+    "    try (v as I64 iso) end";
+
+  TEST_ERRORS_1(src, "this capture violates capabilities");
+}
+
+TEST_F(BadPonyTest, AsUnaliased)
+{
+  const char* src =
+    "class trn Foo\n"
+
+    "actor Main\n"
+    "  let foo: Foo = Foo\n"
+
+    "  new create(env: Env) => None\n"
+
+    "  fun ref apply() ? =>\n"
+    "    (foo as Foo trn)";
+
+  TEST_COMPILE(src);
+}
+
+TEST_F(BadPonyTest, CodegenMangledFunptr)
+{
+  // Test that we don't crash in codegen when generating the function pointer.
+  const char* src =
+    "interface I\n"
+    "  fun foo(x: U32)\n"
+
+    "actor Main\n"
+    "  new create(env: Env) =>\n"
+    "    let i: I = this\n"
+    "    @foo[None](addressof i.foo)\n"
+
+    "  fun foo(x: Any) => None";
+
+  TEST_COMPILE(src);
+}
+
+TEST_F(BadPonyTest, AsFromUninferredReference)
+{
+  // From issue #2035
+  const char* src =
+    "actor Main\n"
+    "  new create(env: Env) =>\n"
+    "    let b = apply(true)\n"
+    "    b as Bool\n"
+
+    "  fun ref apply(s: String): (Bool | None) =>\n"
+    "    true";
+
+  TEST_ERRORS_2(src,
+    "argument not a subtype of parameter",
+    "cannot infer type of b");
+}
+
+TEST_F(BadPonyTest, FFIDeclaredTupleArgument)
+{
+  const char* src =
+    "use @foo[None](x: (U8, U8))\n"
+
+    "actor Main\n"
+    "  new create(env: Env) =>\n"
+    "    @foo((0, 0))";
+
+  TEST_ERRORS_1(src, "cannot pass tuples as FFI arguments");
+}
+
+TEST_F(BadPonyTest, FFIUndeclaredTupleArgument)
+{
+  const char* src =
+    "actor Main\n"
+    "  new create(env: Env) =>\n"
+    "    @foo[None]((U8(0), U8(0)))";
+
+  TEST_ERRORS_1(src, "cannot pass tuples as FFI arguments");
+}
+
+TEST_F(BadPonyTest, FFIDeclaredTupleReturn)
+{
+  const char* src =
+    "use @foo[(U8, U8)]()\n"
+
+    "actor Main\n"
+    "  new create(env: Env) =>\n"
+    "    @foo()";
+
+  TEST_ERRORS_1(src, "an FFI function cannot return a tuple");
+}
+
+TEST_F(BadPonyTest, FFIUndeclaredTupleReturn)
+{
+  const char* src =
+    "actor Main\n"
+    "  new create(env: Env) =>\n"
+    "    @foo[(U8, U8)]()";
+
+  TEST_ERRORS_1(src, "an FFI function cannot return a tuple");
+}
+
+TEST_F(BadPonyTest, MatchExhaustiveLastCaseUnionSubset)
+{
+  // From issue #2048
+  const char* src =
+    "primitive P1\n"
+    "primitive P2\n"
+
+    "actor Main\n"
+    "  new create(env: Env) => apply(None)\n"
+
+    "  fun apply(p': (P1 | P2 | None)) =>\n"
+    "    match p'\n"
+    "    | None => None\n"
+    "    | let p: (P1 | P2) => None\n"
+    "    end";
+
+  TEST_COMPILE(src);
+}
+
+TEST_F(BadPonyTest, QuoteCommentsEmptyLine)
+{
+  // From issue #2027
+  const char* src =
+    "\"\"\"\n"
+    "\"\"\"\n"
+    "actor Main\n"
+    "  new create(env: Env) => None\n";
+
+  TEST_COMPILE(src);
+}
+
+TEST_F(BadPonyTest, AsUninferredNumericLiteral)
+{
+  // From issue #2037
+  const char* src =
+    "actor Main\n"
+    "  new create(env: Env) =>\n"
+    "    0 as I64\n"
+    "    0.0 as F64";
+
+  TEST_ERRORS_2(src,
+    "Cannot cast uninferred numeric literal",
+    "Cannot cast uninferred numeric literal");
+}
+
+TEST_F(BadPonyTest, AsNestedUninferredNumericLiteral)
+{
+  // From issue #2037
+  const char* src =
+    "actor Main\n"
+    "  new create(env: Env) =>\n"
+    "    (0, 1) as (I64, I64)";
+
+  TEST_ERRORS_1(src, "Cannot cast uninferred literal");
+}
+
+TEST_F(BadPonyTest, DontCareUnusedBranchValue)
+{
+  // From issue #2073
+  const char* src =
+    "actor Main\n"
+    "  new create(env: Env) =>\n"
+    "    if false then\n"
+    "      None\n"
+    "    else\n"
+    "      _\n"
+    "    end";
+
+  TEST_COMPILE(src);
+}
+
+TEST_F(BadPonyTest, ForwardTuple)
+{
+  // From issue #2097
+  const char* src =
+    "class val X\n"
+
+    "trait T\n"
+    "  fun f(): Any val\n"
+
+    "class C is T\n"
+    "  fun f(): (X, USize) => (X, 0)\n"
+
+    "actor Main\n"
+    "  new create(env: Env) =>\n"
+    "    let t: T = C\n"
+    "    t.f()";
+
+  TEST_COMPILE(src);
 }

@@ -2,7 +2,6 @@
 #include "../ast/astbuild.h"
 #include "../ast/id.h"
 #include "../type/reify.h"
-#include "../type/viewpoint.h"
 #include "../pkg/package.h"
 #include "ponyassert.h"
 
@@ -162,6 +161,10 @@ static bool names_typealias(pass_opt_t* opt, ast_t** astp, ast_t* def,
 
   // Replace this with the alias.
   ast_replace(astp, r_alias);
+
+  if(!expr)
+    ast_resetpass(*astp, PASS_NAME_RESOLUTION);
+
   return true;
 }
 
@@ -187,12 +190,17 @@ static bool names_typeparam(pass_opt_t* opt, ast_t** astp, ast_t* def)
     }
   }
 
+  const char* name = ast_name(id);
+
   // Change to a typeparamref.
   REPLACE(astp,
     NODE(TK_TYPEPARAMREF,
       TREE(id)
       TREE(cap)
       TREE(ephemeral)));
+
+  if(opt->check.frame->iftype_body != NULL)
+    def = ast_get(ast, name, NULL);
 
   ast_setdata(*astp, def);
   return true;
@@ -207,7 +215,8 @@ static bool names_type(pass_opt_t* opt, ast_t** astp, ast_t* def)
 
   if(tcap == TK_NONE)
   {
-    if(opt->check.frame->constraint != NULL)
+    if((opt->check.frame->constraint != NULL) ||
+      (opt->check.frame->iftype_constraint != NULL))
     {
       // A primitive constraint is a val, otherwise #any.
       if(ast_id(def) == TK_PRIMITIVE)
@@ -278,7 +287,6 @@ ast_t* names_def(pass_opt_t* opt, ast_t* ast)
 
 bool names_nominal(pass_opt_t* opt, ast_t* scope, ast_t** astp, bool expr)
 {
-  typecheck_t* t = &opt->check;
   ast_t* ast = *astp;
 
   if(ast_data(ast) != NULL)
@@ -287,10 +295,10 @@ bool names_nominal(pass_opt_t* opt, ast_t* scope, ast_t** astp, bool expr)
   AST_GET_CHILDREN(ast, package_id, type_id, typeparams, cap, eph);
 
   // Keep some stats.
-  t->stats.names_count++;
+  opt->check.stats.names_count++;
 
   if(ast_id(cap) == TK_NONE)
-    t->stats.default_caps_count++;
+    opt->check.stats.default_caps_count++;
 
   ast_t* r_scope = get_package_scope(opt, scope, ast);
 
@@ -357,34 +365,6 @@ bool names_nominal(pass_opt_t* opt, ast_t* scope, ast_t** astp, bool expr)
   return r;
 }
 
-static bool names_arrow(pass_opt_t* opt, ast_t** astp)
-{
-  AST_GET_CHILDREN(*astp, left, right);
-
-  switch(ast_id(left))
-  {
-    case TK_ISO:
-    case TK_TRN:
-    case TK_REF:
-    case TK_VAL:
-    case TK_BOX:
-    case TK_TAG:
-    case TK_THISTYPE:
-    case TK_TYPEPARAMREF:
-    {
-      ast_t* r_ast = viewpoint_type(left, right);
-      ast_replace(astp, r_ast);
-      return true;
-    }
-
-    default: {}
-  }
-
-  ast_error(opt->check.errors, left,
-    "only 'this', refcaps, and type parameters can be viewpoints");
-  return false;
-}
-
 ast_result_t pass_names(ast_t** astp, pass_opt_t* options)
 {
   (void)options;
@@ -393,11 +373,6 @@ ast_result_t pass_names(ast_t** astp, pass_opt_t* options)
   {
     case TK_NOMINAL:
       if(!names_nominal(options, *astp, astp, false))
-        return AST_FATAL;
-      break;
-
-    case TK_ARROW:
-      if(!names_arrow(options, astp))
         return AST_FATAL;
       break;
 

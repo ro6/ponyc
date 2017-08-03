@@ -30,6 +30,10 @@ LLVMValueRef gen_expr(compile_t* c, ast_t* ast)
       ret = gen_fieldload(c, ast);
       break;
 
+    case TK_TUPLEELEMREF:
+      ret = gen_tupleelemptr(c, ast);
+      break;
+
     case TK_EMBEDREF:
       ret = gen_fieldembed(c, ast);
       break;
@@ -49,14 +53,19 @@ LLVMValueRef gen_expr(compile_t* c, ast_t* ast)
       ret = gen_localload(c, ast);
       break;
 
+    case TK_TYPEREF:
     case TK_DONTCARE:
     case TK_DONTCAREREF:
     case TK_MATCH_DONTCARE:
-      ret = GEN_NOVALUE;
+      ret = GEN_NOTNEEDED;
       break;
 
     case TK_IF:
       ret = gen_if(c, ast);
+      break;
+
+    case TK_IFTYPE_SET:
+      ret = gen_iftype(c, ast);
       break;
 
     case TK_WHILE:
@@ -247,6 +256,8 @@ LLVMValueRef gen_assign_cast(compile_t* c, LLVMTypeRef l_type,
 {
   if(r_value <= GEN_NOVALUE)
     return r_value;
+
+  pony_assert(r_value != GEN_NOTNEEDED);
 
   LLVMTypeRef r_type = LLVMTypeOf(r_value);
 

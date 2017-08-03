@@ -32,6 +32,13 @@ ast_t* type_pointer_to(pass_opt_t* opt, ast_t* to);
 ast_t* type_sugar(ast_t* from, const char* package, const char* name);
 
 /**
+ * Same as above, but with typeargs.
+ * Does not validate the type.
+ */
+ast_t* type_sugar_args(ast_t* from, const char* package, const char* name,
+  ast_t* typeargs);
+
+/**
 * Add a branch type to a control structure type.
 */
 ast_t* control_type_add_branch(pass_opt_t* opt, ast_t* control_type,
@@ -48,10 +55,16 @@ ast_t* type_union(pass_opt_t* opt, ast_t* l_type, ast_t* r_type);
 ast_t* type_isect(pass_opt_t* opt, ast_t* l_type, ast_t* r_type);
 
 /**
+ * Build a type to describe a class/actor.
+ */
+ast_t* type_for_class(pass_opt_t* opt, ast_t* def, ast_t* ast,
+  token_id cap, token_id ephemeral, bool expr);
+
+/**
  * Build a type to describe the current class/actor.
  */
 ast_t* type_for_this(pass_opt_t* opt, ast_t* ast, token_id cap,
-  token_id ephemeral, bool defs);
+  token_id ephemeral);
 
 /**
  * Build a type to describe a function signature.

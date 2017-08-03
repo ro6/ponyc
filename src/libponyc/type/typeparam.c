@@ -1,8 +1,12 @@
 #include "typeparam.h"
+#include "assemble.h"
 #include "cap.h"
 #include "subtype.h"
+#include "matchtype.h"
 #include "../ast/token.h"
+#include "../../libponyrt/mem/pool.h"
 #include "ponyassert.h"
+#include <string.h>
 
 static token_id cap_union_constraint(token_id a, token_id b)
 {
@@ -546,4 +550,80 @@ void typeparam_set_cap(ast_t* typeparamref)
   ast_t* constraint = typeparam_constraint(typeparamref);
   token_id tcap = cap_from_constraint(constraint);
   ast_setid(cap, tcap);
+}
+
+static void typeparamref_current(ast_t* typeparamref, ast_t* scope)
+{
+  pony_assert(ast_id(typeparamref) == TK_TYPEPARAMREF);
+
+  ast_t* def = (ast_t*)ast_data(typeparamref);
+  ast_t* id = ast_child(typeparamref);
+
+  ast_t* current_def = ast_get(scope, ast_name(id), NULL);
+  if(def != current_def)
+  {
+    ast_setdata(typeparamref, current_def);
+    typeparam_set_cap(typeparamref);
+  }
+}
+
+static void typeparam_current_inner(ast_t* type, ast_t* scope)
+{
+  switch(ast_id(type))
+  {
+    case TK_TYPEPARAMREF:
+      return typeparamref_current(type, scope);
+
+    case TK_NOMINAL:
+    {
+      ast_t* typeargs = ast_childidx(type, 2);
+      ast_t* typearg = ast_child(typeargs);
+
+      while(typearg != NULL)
+      {
+        typeparam_current_inner(typearg, scope);
+        typearg = ast_sibling(typearg);
+      }
+      break;
+    }
+
+    case TK_UNIONTYPE:
+    case TK_ISECTTYPE:
+    case TK_TUPLETYPE:
+    {
+      ast_t* child = ast_child(type);
+
+      while(child != NULL)
+      {
+        typeparam_current_inner(child, scope);
+        child = ast_sibling(child);
+      }
+
+      break;
+    }
+
+    case TK_ARROW:
+    {
+      AST_GET_CHILDREN(type, left, right);
+
+      typeparam_current_inner(left, scope);
+      typeparam_current_inner(right, scope);
+
+      break;
+    }
+
+    default:
+      pony_assert(0);
+  }
+}
+
+ast_t* typeparam_current(pass_opt_t* opt, ast_t* type, ast_t* scope)
+{
+  if(opt->check.frame->iftype_body == NULL)
+    return type;
+
+  type = ast_dup(type);
+  typeparam_current_inner(type, scope);
+
+  return type;
 }

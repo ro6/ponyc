@@ -11,7 +11,7 @@ class ClientSide is TCPConnectionNotify
 
   fun ref connected(conn: TCPConnection ref) =>
     try
-      (let host, let service) = conn.remote_address().name()
+      (let host, let service) = conn.remote_address().name()?
       _env.out.print("connected to " + host + ":" + service)
       conn.set_nodelay(true)
       conn.set_keepalive(10)
@@ -21,7 +21,9 @@ class ClientSide is TCPConnectionNotify
   fun ref connect_failed(conn: TCPConnection ref) =>
     _env.out.print("connect failed")
 
-  fun ref received(conn: TCPConnection ref, data: Array[U8] iso): Bool =>
+  fun ref received(conn: TCPConnection ref, data: Array[U8] iso,
+    times: USize): Bool
+  =>
     _env.out.print(consume data)
     true
 

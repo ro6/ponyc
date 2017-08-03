@@ -1,4 +1,5 @@
 #include "hash.h"
+#include "../gc/serialise.h"
 #include "ponyassert.h"
 #include <stdlib.h>
 #include <string.h>
@@ -114,7 +115,6 @@ static void resize(hashmap_t* map, cmp_fn cmp, alloc_fn alloc,
 static size_t optimize_item(hashmap_t* map, alloc_fn alloc,
   free_size_fn fr, cmp_fn cmp, size_t old_index)
 {
-
   size_t mask = map->size - 1;
 
   size_t h = map->buckets[old_index].hash;
@@ -133,17 +133,45 @@ static size_t optimize_item(hashmap_t* map, alloc_fn alloc,
     ib_index = index >> HASHMAP_BITMAP_TYPE_BITS;
     ib_offset = index & HASHMAP_BITMAP_TYPE_MASK;
 
-    // don't need to check probe counts for filled buckets because
-    // earlier items are guaranteed to have a lower probe count
-    // than us and we cannot displace them
-    // found an earlier empty bucket so move item
+    // Reconstute our invariants
+    //
+    // During the process of removing "dead" items from our hash, it is
+    // possible to violate the invariants of our map. We will now proceed to
+    // detect and fix those violations.
+    //
+    // There are 2 possible invariant violations that we need to handle. One
+    // is fairly simple, the other rather more complicated
+    //
+    // 1. We are no longer at our natural hash location AND that location is
+    // empty. If that violation were allowed to continue then when searching
+    // later, we'd find the empty bucket and stop looking for this hashed item.
+    // Fixing this violation is handled by our `if` statement
+    //
+    // 2. Is a bit more complicated and is handled in our `else`
+    // statement. It's possible while restoring invariants for our most
+    // important invariant to get violated. That is, that items with a lower
+    // probe count should appear before those with a higher probe count.
+    // The else statement checks for this condition and repairs it.
     if((map->item_bitmap[ib_index] & ((bitmap_t)1 << ib_offset)) == 0)
     {
       ponyint_hashmap_clearindex(map, old_index);
       ponyint_hashmap_putindex(map, entry, h, cmp, alloc, fr, index);
       return 1;
     }
+    else
+    {
+      size_t item_probe_length =
+        get_probe_length(map, h, index, mask);
+      size_t there_probe_length =
+        get_probe_length(map, map->buckets[index].hash, index, mask);
 
+      if (item_probe_length > there_probe_length)
+      {
+        ponyint_hashmap_clearindex(map, old_index);
+        ponyint_hashmap_putindex(map, entry, h, cmp, alloc, fr, index);
+        return 1;
+      }
+    }
     // find next bucket index
     index = (index + 1) & mask;
   }
@@ -518,4 +546,80 @@ void ponyint_hashmap_optimize(hashmap_t* map, alloc_fn alloc,
     }
     num_iters++;
   } while(count > 0);
+}
+
+void ponyint_hashmap_serialise_trace(pony_ctx_t* ctx, void* object,
+  pony_type_t* elem_type)
+{
+  hashmap_t* map = (hashmap_t*)object;
+
+  size_t bitmap_size = (map->size >> HASHMAP_BITMAP_TYPE_BITS) +
+    ((map->size & HASHMAP_BITMAP_TYPE_MASK)==0?0:1);
+  pony_serialise_reserve(ctx, map->item_bitmap,
+    (bitmap_size * sizeof(bitmap_t)) + (map->size * sizeof(hashmap_entry_t)));
+
+  size_t i = HASHMAP_BEGIN;
+  void* elem;
+
+  while((elem = ponyint_hashmap_next(&i, map->count, map->item_bitmap,
+    map->size, map->buckets)) != NULL)
+  {
+    pony_traceknown(ctx, elem, elem_type, PONY_TRACE_MUTABLE);
+  }
+}
+
+void ponyint_hashmap_serialise(pony_ctx_t* ctx, void* object, void* buf,
+  size_t offset)
+{
+  hashmap_t* map = (hashmap_t*)object;
+  hashmap_t* dst = (hashmap_t*)((uintptr_t)buf + offset);
+
+  uintptr_t bitmap_offset = pony_serialise_offset(ctx, map->item_bitmap);
+
+  dst->count = map->count;
+  dst->size = map->size;
+  dst->item_bitmap = (bitmap_t*)bitmap_offset;
+  dst->buckets = NULL;
+
+  size_t bitmap_size = (map->size >> HASHMAP_BITMAP_TYPE_BITS) +
+    ((map->size & HASHMAP_BITMAP_TYPE_MASK)==0?0:1);
+  memcpy((void*)((uintptr_t)buf + bitmap_offset), map->item_bitmap,
+    (bitmap_size * sizeof(bitmap_t)) + (map->size * sizeof(hashmap_entry_t)));
+
+  hashmap_entry_t* dst_buckets = (hashmap_entry_t*)
+    ((uintptr_t)buf + bitmap_offset + (bitmap_size * sizeof(bitmap_t)));
+
+  size_t i = HASHMAP_BEGIN;
+  void* elem;
+
+  while((elem = ponyint_hashmap_next(&i, map->count, map->item_bitmap,
+    map->size, map->buckets)) != NULL)
+  {
+    dst_buckets[i].ptr = (void*)pony_serialise_offset(ctx, elem);
+    dst_buckets[i].hash = map->buckets[i].hash;
+  }
+}
+
+void ponyint_hashmap_deserialise(pony_ctx_t* ctx, void* object,
+  pony_type_t* elem_type)
+{
+  hashmap_t* map = (hashmap_t*)object;
+
+  size_t bitmap_size = (map->size >> HASHMAP_BITMAP_TYPE_BITS) +
+    ((map->size & HASHMAP_BITMAP_TYPE_MASK)==0?0:1);
+  map->item_bitmap =
+    (bitmap_t*)pony_deserialise_block(ctx, (uintptr_t)map->item_bitmap,
+      (bitmap_size * sizeof(bitmap_t)) + (map->size * sizeof(hashmap_entry_t)));
+  map->buckets = (hashmap_entry_t*)((char*)map->item_bitmap +
+    (bitmap_size * sizeof(bitmap_t)));
+
+  size_t i = HASHMAP_BEGIN;
+  void* elem;
+
+  while((elem = ponyint_hashmap_next(&i, map->count, map->item_bitmap,
+    map->size, map->buckets)) != NULL)
+  {
+    map->buckets[i].ptr = pony_deserialise_offset(ctx, elem_type,
+      (uintptr_t)elem);
+  }
 }

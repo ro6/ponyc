@@ -4,12 +4,12 @@
 #ifndef __cplusplus
 #  include <stdalign.h>
 #endif
-#include <pony.h>
-#include <platform.h>
-#include "actor/messageq.h"
-#include "gc/gc.h"
-#include "gc/serialise.h"
 #include "mpmcq.h"
+#include "../actor/messageq.h"
+#include "../gc/gc.h"
+#include "../gc/serialise.h"
+#include "../pony.h"
+#include <platform.h>
 
 PONY_EXTERN_C_BEGIN
 
@@ -28,11 +28,13 @@ typedef struct pony_ctx_t
   trace_actor_fn trace_actor;
   gcstack_t* stack;
   actormap_t acquire;
-  bool finalising;
 
   void* serialise_buffer;
   size_t serialise_size;
   ponyint_serialise_t serialise;
+  serialise_alloc_fn serialise_alloc;
+  serialise_alloc_fn serialise_alloc_final;
+  serialise_throw_fn serialise_throw;
 } pony_ctx_t;
 
 struct scheduler_t

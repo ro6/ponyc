@@ -10,14 +10,20 @@ static void reify_typeparamref(ast_t** astp, ast_t* typeparam, ast_t* typearg)
 {
   ast_t* ast = *astp;
   pony_assert(ast_id(ast) == TK_TYPEPARAMREF);
+  pony_assert(ast_id(typeparam) == TK_TYPEPARAM);
 
   ast_t* ref_def = (ast_t*)ast_data(ast);
-  ast_t* param_def = (ast_t*)ast_data(typeparam);
+
+  // We can't compare ref_def and typeparam, as they could be a copy or
+  // a iftype shadowing. However, their data points back to the original
+  // typeparam definition, which can be compared.
+  ref_def = (ast_t*)ast_data(ref_def);
+  typeparam = (ast_t*)ast_data(typeparam);
 
   pony_assert(ref_def != NULL);
-  pony_assert(param_def != NULL);
+  pony_assert(typeparam != NULL);
 
-  if(ref_def != param_def)
+  if(ref_def != typeparam)
     return;
 
   // Keep ephemerality.
@@ -61,21 +67,46 @@ static void reify_arrow(ast_t** astp)
   ast_replace(astp, r_type);
 }
 
-static void reify_one(ast_t** astp, ast_t* typeparam, ast_t* typearg)
+static void reify_reference(ast_t** astp, ast_t* typeparam, ast_t* typearg)
+{
+  ast_t* ast = *astp;
+  pony_assert(ast_id(ast) == TK_REFERENCE);
+
+  const char* name = ast_name(ast_child(ast));
+
+  sym_status_t status;
+  ast_t* ref_def = ast_get(ast, name, &status);
+
+  if(ref_def == NULL)
+    return;
+
+  ast_t* param_def = (ast_t*)ast_data(typeparam);
+  pony_assert(param_def != NULL);
+
+  if(ref_def != param_def)
+    return;
+
+  ast_setid(ast, TK_TYPEREF);
+  ast_add(ast, ast_from(ast, TK_NONE));    // 1st child: package reference
+  ast_append(ast, ast_from(ast, TK_NONE)); // 3rd child: type args
+  ast_settype(ast, typearg);
+}
+
+static void reify_one(pass_opt_t* opt, ast_t** astp, ast_t* typeparam, ast_t* typearg)
 {
   ast_t* ast = *astp;
   ast_t* child = ast_child(ast);
 
   while(child != NULL)
   {
-    reify_one(&child, typeparam, typearg);
+    reify_one(opt, &child, typeparam, typearg);
     child = ast_sibling(child);
   }
 
   ast_t* type = ast_type(ast);
 
   if(type != NULL)
-    reify_one(&type, typeparam, typearg);
+    reify_one(opt, &type, typeparam, typearg);
 
   switch(ast_id(ast))
   {
@@ -85,6 +116,10 @@ static void reify_one(ast_t** astp, ast_t* typeparam, ast_t* typearg)
 
     case TK_ARROW:
       reify_arrow(astp);
+      break;
+
+    case TK_REFERENCE:
+      reify_reference(astp, typeparam, typearg);
       break;
 
     default: {}
@@ -174,7 +209,7 @@ ast_t* reify(ast_t* ast, ast_t* typeparams, ast_t* typeargs, pass_opt_t* opt,
 
   while((typeparam != NULL) && (typearg != NULL))
   {
-    reify_one(&r_ast, typeparam, typearg);
+    reify_one(opt, &r_ast, typeparam, typearg);
     typeparam = ast_sibling(typeparam);
     typearg = ast_sibling(typearg);
   }
@@ -220,6 +255,17 @@ bool check_constraints(ast_t* orig, ast_t* typeparams, ast_t* typeargs,
 
   while(typeparam != NULL)
   {
+    if(is_bare(typearg))
+    {
+      if(report_errors)
+      {
+        ast_error(opt->check.errors, typearg,
+          "a bare type cannot be used as a type argument");
+      }
+
+      return false;
+    }
+
     switch(ast_id(typearg))
     {
       case TK_NOMINAL:

@@ -5,8 +5,14 @@ primitive URLPartPath
 primitive URLPartQuery
 primitive URLPartFragment
 
-type URLPart is (URLPartUser | URLPartPassword | URLPartHost |
-  URLPartPath | URLPartQuery | URLPartFragment)
+type URLPart is
+  ( URLPartUser
+  | URLPartPassword
+  | URLPartHost
+  | URLPartPath
+  | URLPartQuery
+  | URLPartFragment
+  )
 
 
 primitive URLEncode
@@ -27,7 +33,7 @@ primitive URLEncode
     An error is raised on invalid existing encoding or illegal characters that
     cannot be encoded.
     """
-    if _is_host_ipv6(from, part) then
+    if _is_host_ipv6(from, part)? then
       return from
     end
 
@@ -35,13 +41,13 @@ primitive URLEncode
     var i = USize(0)
 
     while i < from.size() do
-      var c = from(i)
+      var c = from(i)?
       var should_encode = false
 
       if (c == '%') and percent_encoded then
         // Treat % as an encoded character.
         // _unhex() will throw on bad / missing hex digit.
-        c = (_unhex(from(i + 1)) << 4) or _unhex(from(i + 2))
+        c = (_unhex(from(i + 1)?)? << 4) or _unhex(from(i + 2)?)?
         should_encode = not _normal_decode(c, part)
         i = i + 3
       else
@@ -52,8 +58,8 @@ primitive URLEncode
 
       if should_encode then
         out.push('%')
-        out.push(_hex(c >> 4))
-        out.push(_hex(c and 0xF))
+        out.push(_hex(c >> 4)?)
+        out.push(_hex(c and 0xF)?)
       else
         out.push(c)
       end
@@ -69,11 +75,11 @@ primitive URLEncode
     var i = USize(0)
 
     while i < from.size() do
-      let c = from(i)
+      let c = from(i)?
 
       if c == '%' then
         // _unhex() will throw on bad / missing hex digit.
-        let value = (_unhex(from(i + 1)) << 4) or _unhex(from(i + 2))
+        let value = (_unhex(from(i + 1)?)? << 4) or _unhex(from(i + 2)?)?
         out.push(value)
         i = i + 3
       elseif c == '+' then
@@ -95,12 +101,16 @@ primitive URLEncode
       var i = USize(0)
 
       while i < scheme.size() do
-        let c = scheme(i)
+        let c = scheme(i)?
         
-        if ((c < 'a') or (c > 'z')) and
-          ((c < 'A') or (c > 'Z')) and
-          ((c < '0') or (c > '9')) and
-          (c != '-') and (c != '+') and (c != '.') then
+        if
+          ((c < 'a') or (c > 'z'))
+            and ((c < 'A') or (c > 'Z'))
+            and ((c < '0') or (c > '9'))
+            and (c != '-')
+            and (c != '+')
+            and (c != '.')
+        then
           return false
         end
         
@@ -113,11 +123,10 @@ primitive URLEncode
   fun check(from: String, part: URLPart): Bool =>
     """
     Check that the given string is valid to be the given URL part without
-    further encoding.
-    Canonical form is not checked for, merely validity.
+    further encoding. Canonical form is not checked for, merely validity.
     """
     try
-      if _is_host_ipv6(from, part) then
+      if _is_host_ipv6(from, part)? then
         return true
       end
     else
@@ -128,13 +137,13 @@ primitive URLEncode
       var i = USize(0)
 
       while i < from.size() do
-        let c = from(i)
+        let c = from(i)?
         
         if c == '%' then
           // Character is encoded.
           // _unhex() will throw on bad / missing hex digit.
-          _unhex(from(i + 1))
-          _unhex(from(i + 2))
+          _unhex(from(i + 1)?)?
+          _unhex(from(i + 2)?)?
           i = i + 3
         elseif _is_char_legal(c, part) then
           i = i + 1
@@ -178,16 +187,20 @@ primitive URLEncode
   fun _normal_decode(value: U8, part: URLPart): Bool =>
     """
     Determine whether the given character should be decoded to give normal
-    form.
-    Some characters, such as sub-delims, are valid to have either in encoded or
-    unencoded form. These should be left as they are when normalising. This
-    will return false for such characters.
+    form. Some characters, such as sub-delims, are valid to have either in
+    encoded or unencoded form. These should be left as they are when
+    normalising. This will return false for such characters.
     """
     // The unreserved characters should always be decoded.
-    if ((value >= 'a') and (value <= 'z')) or
-      ((value >= 'A') and (value <= 'Z')) or
-      ((value >= '0') and (value <= '9')) or
-      (value == '-') or (value == '_') or (value == '.') or (value == '~') then
+    if
+      ((value >= 'a') and (value <= 'z'))
+        or ((value >= 'A') and (value <= 'Z'))
+        or ((value >= '0') and (value <= '9'))
+        or (value == '-')
+        or (value == '_')
+        or (value == '.')
+        or (value == '~')
+    then
       return true
     end
 
@@ -212,7 +225,7 @@ primitive URLEncode
       Raises an error if string is an invalid IPv6 format host.
     """
     try
-      if (part isnt URLPartHost) or (host.size() == 0) or (host(0) != '[') then
+      if (part isnt URLPartHost) or (host.size() == 0) or (host(0)? != '[') then
         return false
       end
     end
@@ -221,13 +234,16 @@ primitive URLEncode
     var i = USize(1)
 
     while i < (host.size() - 1) do
-      let c = host(i)
+      let c = host(i)?
 
       // Only hex digits, ':' and '.' and allowed.
-      if ((c < 'a') or (c > 'f')) and
-        ((c < 'A') or (c > 'F')) and
-        ((c < '0') or (c > '9')) and
-        (c != ':') and (c != '.') then
+      if
+        ((c < 'a') or (c > 'f'))
+          and ((c < 'A') or (c > 'F'))
+          and ((c < '0') or (c > '9'))
+          and (c != ':')
+          and (c != '.')
+      then
         error
       end
         
@@ -235,7 +251,7 @@ primitive URLEncode
     end
 
     // Must end with a ']'.
-    if host(host.size() - 1) != ']' then error end
+    if host(host.size() - 1)? != ']' then error end
     true
 
   fun _hex(value: U8): U8 ? =>

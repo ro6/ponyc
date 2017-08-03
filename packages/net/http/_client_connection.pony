@@ -29,7 +29,7 @@ actor _ClientConnection is HTTPSession
 
   ## The HandlerFactory
 
-  The `Client` class will try to re-use sessions.  If it needs to create
+  The `Client` class will try to re-use sessions. If it needs to create
   a new session, based on the request URL, it will do that, and then it
   will need a new instance of the caller's `HTTPHandler` class.
   Since the client application code does not know in advance when this
@@ -49,12 +49,16 @@ actor _ClientConnection is HTTPSession
   var _conn: (TCPConnection | None) = None
   var _nobackpressure: Bool = true   // TCP backpressure indicator
   
-  new create(auth: TCPConnectionAuth, host: String, service: String,
-    sslctx: (SSLContext | None) = None, pipeline: Bool = true,
+  new create(
+    auth: TCPConnectionAuth,
+    host: String,
+    service: String,
+    sslctx: (SSLContext | None) = None,
+    pipeline: Bool = true,
     handlermaker: HandlerFactory val)
-    =>
+  =>
     """
-    Create a connection for the given host and service.  We also create
+    Create a connection for the given host and service. We also create
     an instance of the client application's HTTPHandler.
     """
     _auth = auth
@@ -62,7 +66,7 @@ actor _ClientConnection is HTTPSession
     _service = service
     _sslctx = sslctx
     _pipeline = pipeline
-    _app_handler = handlermaker( this )
+    _app_handler = handlermaker(this)
 
   be apply(request: Payload val) =>
     """
@@ -76,25 +80,25 @@ actor _ClientConnection is HTTPSession
     """
     Cancel a request.
     """
-    // We look for it first in the unsent queue.  If it is there,
+    // We look for it first in the unsent queue. If it is there,
     // we just remove it.
     try
       for node in _unsent.nodes() do
-        if node() is request then
+        if node()? is request then
           node.remove()
-          node.pop()
+          node.pop()?
           return
         end
       end
 
       // It might have been sent already, but no response received
-      // yet.  In that case we have to close the connection so that
+      // yet. In that case we have to close the connection so that
       // the server finds out.
       for node in _sent.nodes() do
-        if node() is request then
+        if node()? is request then
           try (_conn as TCPConnection).dispose() end
           _conn = None
-          node.pop()
+          node.pop()?
           break
         end
       end
@@ -105,14 +109,14 @@ actor _ClientConnection is HTTPSession
     Deal with a new Response coming back from the server.
 
     Since the session operates in a FIFO manner, the Request corresponding
-    to this Response is the oldest one on the `_sent` list.  We take it
-    off that list and call its handler.  It becomes the 'currently being
+    to this Response is the oldest one on the `_sent` list. We take it
+    off that list and call its handler. It becomes the 'currently being
     delivered' response and subsequent body data has to go there as well,
     if there is any.
     """
     try
-      let request = _sent.shift()
-      _app_handler( response )
+      let request = _sent.shift()?
+      _app_handler(response)
 
       // If that request has no body data coming, we can go look
       // for more requests to send.
@@ -151,27 +155,27 @@ actor _ClientConnection is HTTPSession
       _conn = None
     end
 
-  be write( data: ByteSeq val ) =>
+  be write(data: ByteSeq val) =>
     """
-    Write a low-level byte stream.  The `Payload` objects call this to
+    Write a low-level byte stream. The `Payload` objects call this to
     generate their wire representation.
     """
     match _conn
-    | let c: TCPConnection => c.write( data )
+    | let c: TCPConnection => c.write(data)
     end
 
-  be _chunk( data: ByteSeq val ) =>
+  be _chunk(data: ByteSeq val) =>
     """
     Called when *inbound* body data has arrived for the currently
-    inbound `Payload`.  This should be passed directly to the application's
+    inbound `Payload`. This should be passed directly to the application's
     `HTTPHandler.chunk` method.
     """
-    _app_handler.chunk( data )
+    _app_handler.chunk(data)
 
   be _finish() =>
     """
     Inidcates that the last *inbound* body chunk has been sent to
-    `_chunk`.  This is passed on to the front end.
+    `_chunk`. This is passed on to the front end.
     """
     _app_handler.finished()
 
@@ -180,6 +184,14 @@ actor _ClientConnection is HTTPSession
     We are done sending a request with a long body.
     """
     None
+
+  be dispose() =>
+    """
+    Close the connection from the client end.
+    """
+    match _conn
+    | let c: TCPConnection => c.dispose()
+    end
 
   be throttled() =>
     """
@@ -227,10 +239,10 @@ actor _ClientConnection is HTTPSession
         while _nobackpressure do
           // Take a request off the unsent queue and notice whether
           // it is safe.
-          let request = _unsent.shift()
+          let request = _unsent.shift()?
           let safereq = request.is_safe()
           // Send all of the request that is possible for now.
-          request._write( true, conn )
+          request._write(true, conn)
 
           // If there is a folow-on body, tell client to send it now.
           if request.has_body() then
@@ -254,27 +266,28 @@ actor _ClientConnection is HTTPSession
         end
       end
     else
-      // Oops, the connection is closed.  Open it and try sending
+      // Oops, the connection is closed. Open it and try sending
       // again when it becomes active.
       _new_conn()
     end
 
   fun ref _new_conn() =>
     """
-    Creates a new connection.  `ResponseBuilder` is the notification class
+    Creates a new connection. `ResponseBuilder` is the notification class
     that will send back a `_connected` call when the connection has been made.
     """
     _conn = try
       let ctx = _sslctx as SSLContext
-      let ssl = ctx.client(_host)
-      TCPConnection(_auth,
-                    SSLConnection(_ClientConnHandler(this),
-                                  consume ssl),
-                    _host, _service)
+      let ssl = ctx.client(_host)?
+      TCPConnection(
+        _auth,
+        SSLConnection(_ClientConnHandler(this), consume ssl),
+        _host, _service)
     else
-      TCPConnection(_auth,
-                    _ClientConnHandler(this),
-                    _host, _service)
+      TCPConnection(
+        _auth,
+        _ClientConnHandler(this),
+        _host, _service)
     end
 
   fun ref _cancel_all() =>
@@ -283,13 +296,13 @@ actor _ClientConnection is HTTPSession
     """
     try
       while true do
-        _unsent.pop() //TODO send fail response
+        _unsent.pop()? //TODO send fail response
       end
     end
 
     for node in _sent.nodes() do
       node.remove()
-      try node.pop() end //TODO send fail response
+      try node.pop()? end //TODO send fail response
     end
 
   be _mute() =>

@@ -87,6 +87,30 @@ static lit_op_info_t* lookup_literal_op(const char* name)
 }
 
 
+void operatorliteral_serialise_data(ast_t* ast, ast_t* dst)
+{
+  lit_op_info_t* data = (lit_op_info_t*)ast_data(ast);
+  if(data != NULL)
+  {
+    size_t index = (size_t)(data - _operator_fns);
+    ast_setdata(dst, (void*)index);
+  } else {
+    ast_setdata(dst, (void*)((size_t)(~0)));
+  }
+}
+
+
+void operatorliteral_deserialise_data(ast_t* ast)
+{
+  size_t index = (size_t)ast_data(ast);
+
+  if(index > 17)
+    ast_setdata(ast, (void*)NULL);
+  else
+    ast_setdata(ast, &_operator_fns[index]);
+}
+
+
 bool expr_literal(pass_opt_t* opt, ast_t* ast, const char* name)
 {
   ast_t* type = type_builtin(opt, ast, name);
@@ -589,16 +613,15 @@ static bool coerce_group(ast_t** astp, ast_t* target_type, lit_chain_t* chain,
 
   chain_add(chain, &link, cardinality);
 
-  // Process each group element separately
-  ast_t* p = ast_child(literal_expr);
-
   if(ast_id(literal_expr) == TK_ARRAY)
   {
-    // The first child of an array AST is the forced type, skip it
-    p = ast_sibling(p);
+    // The first child of an array AST is the forced type, the second child is
+    // the sequence of elements.
+    literal_expr = ast_childidx(literal_expr, 1);
   }
 
-  for(; p != NULL; p = ast_sibling(p))
+  // Process each group element separately
+  for(ast_t* p = ast_child(literal_expr); p != NULL; p = ast_sibling(p))
   {
     ast_t* p_type = ast_type(p);
 
@@ -737,7 +760,7 @@ static bool coerce_literal_to_type(ast_t** astp, ast_t* target_type,
 
     case TK_CALL:
     {
-      AST_GET_CHILDREN(literal_expr, positional, named, receiver);
+      AST_GET_CHILDREN(literal_expr, positional, named, question, receiver);
       ast_t* arg = ast_child(positional);
 
       if(!coerce_literal_to_type(&receiver, target_type, chain, opt,
@@ -885,7 +908,7 @@ bool literal_call(ast_t* ast, pass_opt_t* opt)
   pony_assert(ast != NULL);
   pony_assert(ast_id(ast) == TK_CALL);
 
-  AST_GET_CHILDREN(ast, positional_args, named_args, receiver);
+  AST_GET_CHILDREN(ast, positional_args, named_args, question, receiver);
 
   ast_t* recv_type = ast_type(receiver);
 

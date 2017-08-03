@@ -7,6 +7,7 @@
 #include "../gc/cycle.h"
 #include "../gc/trace.h"
 #include "ponyassert.h"
+#include <assert.h>
 #include <string.h>
 #include <stdio.h>
 #include <dtrace.h>
@@ -14,6 +15,10 @@
 #ifdef USE_VALGRIND
 #include <valgrind/helgrind.h>
 #endif
+
+// Ignore padding at the end of the type.
+static_assert((offsetof(pony_actor_t, gc) + sizeof(gc_t)) ==
+  sizeof(pony_actor_pad_t), "Wrong actor pad size!");
 
 enum
 {
@@ -28,17 +33,24 @@ static bool actor_noblock = false;
 
 static bool has_flag(pony_actor_t* actor, uint8_t flag)
 {
-  return (actor->flags & flag) != 0;
+  uint8_t flags = atomic_load_explicit(&actor->flags, memory_order_relaxed);
+  return (flags & flag) != 0;
 }
+
+// The flags of a given actor cannot be mutated from more than one actor at
+// once, so these operations need not be atomic RMW.
 
 static void set_flag(pony_actor_t* actor, uint8_t flag)
 {
-  actor->flags |= flag;
+  uint8_t flags = atomic_load_explicit(&actor->flags, memory_order_relaxed);
+  atomic_store_explicit(&actor->flags, flags | flag, memory_order_relaxed);
 }
 
 static void unset_flag(pony_actor_t* actor, uint8_t flag)
 {
-  actor->flags &= (uint8_t)~flag;
+  uint8_t flags = atomic_load_explicit(&actor->flags, memory_order_relaxed);
+  atomic_store_explicit(&actor->flags, flags & (uint8_t)~flag,
+    memory_order_relaxed);
 }
 
 static bool handle_message(pony_ctx_t* ctx, pony_actor_t* actor,
@@ -246,6 +258,11 @@ bool ponyint_actor_pendingdestroy(pony_actor_t* actor)
 
 void ponyint_actor_setpendingdestroy(pony_actor_t* actor)
 {
+  // This is thread-safe, even though the flag is set from the cycle detector.
+  // The function is only called after the cycle detector has detected a true
+  // cycle and an actor won't change its flags if it is part of a true cycle.
+  // The synchronisation is done through the ACK message sent by the actor to
+  // the cycle detector.
   set_flag(actor, FLAG_PENDINGDESTROY);
 }
 
@@ -261,7 +278,8 @@ void ponyint_actor_final(pony_ctx_t* ctx, pony_actor_t* actor)
     actor->type->final(actor);
 
   // Run all outstanding object finalisers.
-  ponyint_gc_final(ctx, &actor->gc);
+  ponyint_heap_final(&actor->heap);
+
 
   // Restore the current actor.
   ctx->current = prev;
@@ -406,14 +424,27 @@ PONY_API void* pony_realloc(pony_ctx_t* ctx, void* p, size_t size)
   return ponyint_heap_realloc(ctx->current, &ctx->current->heap, p, size);
 }
 
-PONY_API void* pony_alloc_final(pony_ctx_t* ctx, size_t size,
-  pony_final_fn final)
+PONY_API void* pony_alloc_final(pony_ctx_t* ctx, size_t size)
 {
   DTRACE2(HEAP_ALLOC, (uintptr_t)ctx->scheduler, size);
 
-  void* p = ponyint_heap_alloc(ctx->current, &ctx->current->heap, size);
-  ponyint_gc_register_final(ctx, p, final);
-  return p;
+  return ponyint_heap_alloc_final(ctx->current, &ctx->current->heap, size);
+}
+
+void* pony_alloc_small_final(pony_ctx_t* ctx, uint32_t sizeclass)
+{
+  DTRACE2(HEAP_ALLOC, (uintptr_t)ctx->scheduler, HEAP_MIN << sizeclass);
+
+  return ponyint_heap_alloc_small_final(ctx->current, &ctx->current->heap,
+    sizeclass);
+}
+
+void* pony_alloc_large_final(pony_ctx_t* ctx, size_t size)
+{
+  DTRACE2(HEAP_ALLOC, (uintptr_t)ctx->scheduler, size);
+
+  return ponyint_heap_alloc_large_final(ctx->current, &ctx->current->heap,
+    size);
 }
 
 PONY_API void pony_triggergc(pony_actor_t* actor)

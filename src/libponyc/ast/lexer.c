@@ -80,7 +80,11 @@ static const lextoken_t symbols[] =
 
   { ".>", TK_CHAIN },
 
+  { "<:", TK_SUBTYPE },
+
   { "\\", TK_BACKSLASH },
+
+  { "@{", TK_AT_LBRACE },
 
   { "{", TK_LBRACE },
   { "}", TK_RBRACE },
@@ -136,7 +140,6 @@ static const lextoken_t keywords[] =
   { "class", TK_CLASS },
   { "actor", TK_ACTOR },
   { "object", TK_OBJECT },
-  { "lambda", TK_LAMBDA },
 
   { "as", TK_AS },
   { "is", TK_IS },
@@ -165,6 +168,7 @@ static const lextoken_t keywords[] =
 
   { "if", TK_IF },
   { "ifdef", TK_IFDEF },
+  { "iftype", TK_IFTYPE_SET },
   { "then", TK_THEN },
   { "else", TK_ELSE },
   { "elseif", TK_ELSEIF },
@@ -240,6 +244,7 @@ static const lextoken_t abstract[] =
   { "thistype", TK_THISTYPE },
   { "funtype", TK_FUNTYPE },
   { "lambdatype", TK_LAMBDATYPE },
+  { "barelambdatype", TK_BARELAMBDATYPE },
   { "dontcaretype", TK_DONTCARETYPE },
   { "infer", TK_INFERTYPE },
   { "errortype", TK_ERRORTYPE },
@@ -262,6 +267,9 @@ static const lextoken_t abstract[] =
   { "lambdacaptures", TK_LAMBDACAPTURES },
   { "lambdacapture", TK_LAMBDACAPTURE },
 
+  { "lambda", TK_LAMBDA },
+  { "barelambda", TK_BARELAMBDA },
+
   { "seq", TK_SEQ },
   { "qualify", TK_QUALIFY },
   { "call", TK_CALL },
@@ -281,6 +289,7 @@ static const lextoken_t abstract[] =
   { "funref", TK_FUNREF },
   { "fvarref", TK_FVARREF },
   { "fletref", TK_FLETREF },
+  { "tupleelemref", TK_TUPLEELEMREF },
   { "embedref", TK_EMBEDREF },
   { "varref", TK_VARREF },
   { "letref", TK_LETREF },
@@ -291,6 +300,8 @@ static const lextoken_t abstract[] =
   { "funapp", TK_FUNAPP },
   { "bechain", TK_BECHAIN },
   { "funchain", TK_FUNCHAIN },
+
+  { "annotation", TK_ANNOTATION },
 
   { "\\n", TK_NEWLINE },
   {NULL, (token_id)0}
@@ -340,13 +351,8 @@ static void append_to_token(lexer_t* lexer, char c)
   if(lexer->buflen >= lexer->alloc)
   {
     size_t new_len = (lexer->alloc > 0) ? lexer->alloc << 1 : 64;
-    char* new_buf = (char*)ponyint_pool_alloc_size(new_len);
-    memcpy(new_buf, lexer->buffer, lexer->alloc);
-
-    if(lexer->alloc > 0)
-      ponyint_pool_free_size(lexer->alloc, lexer->buffer);
-
-    lexer->buffer = new_buf;
+    lexer->buffer =
+      (char*)ponyint_pool_realloc_size(lexer->alloc, new_len, lexer->buffer);
     lexer->alloc = new_len;
   }
 
@@ -518,8 +524,21 @@ static void normalise_string(lexer_t* lexer)
   if(memchr(lexer->buffer, '\n', lexer->buflen) == NULL)
     return;
 
-  // Calculate leading whitespace.
+  // Trim a leading newline if there is one.
   char* buf = lexer->buffer;
+
+  if((buf[0] == '\r') && (buf[1] == '\n'))
+  {
+    lexer->buflen -= 2;
+    memmove(&buf[0], &buf[2], lexer->buflen);
+  }
+  else if(buf[0] == '\n')
+  {
+    lexer->buflen--;
+    memmove(&buf[0], &buf[1], lexer->buflen);
+  }
+
+  // Calculate leading whitespace.
   size_t ws = lexer->buflen;
   size_t ws_this_line = 0;
   bool in_leading_ws = true;
@@ -534,7 +553,7 @@ static void normalise_string(lexer_t* lexer)
       {
         ws_this_line++;
       }
-      else if((c != '\r') && (c != '\n'))
+      else
       {
         if(ws_this_line < ws)
           ws = ws_this_line;
@@ -580,20 +599,6 @@ static void normalise_string(lexer_t* lexer)
     }
 
     lexer->buflen = compacted - lexer->buffer;
-  }
-
-  // Trim a leading newline if there is one.
-  buf = lexer->buffer;
-
-  if((buf[0] == '\r') && (buf[1] == '\n'))
-  {
-    lexer->buflen -= 2;
-    memmove(&buf[0], &buf[2], lexer->buflen);
-  }
-  else if(buf[0] == '\n')
-  {
-    lexer->buflen--;
-    memmove(&buf[0], &buf[1], lexer->buflen);
   }
 }
 

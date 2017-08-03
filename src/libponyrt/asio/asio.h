@@ -1,7 +1,7 @@
 #ifndef asio_asio_h
 #define asio_asio_h
 
-#include <pony.h>
+#include "../pony.h"
 #include <platform.h>
 #include <stdbool.h>
 
@@ -67,6 +67,11 @@ bool ponyint_asio_start();
  * If there is no current running backend, one will be started.
  */
 asio_backend_t* ponyint_asio_get_backend();
+
+/** Returns the cpu assigned for the ASIO thread.
+ *
+ */
+uint32_t ponyint_asio_get_cpu();
 
 /** Attempts to stop an asynchronous event mechanism.
  *

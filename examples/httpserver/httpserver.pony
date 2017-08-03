@@ -5,8 +5,8 @@ actor Main
   A simple HTTP server.
   """
   new create(env: Env) =>
-    let service = try env.args(1) else "50000" end
-    let limit = try env.args(2).usize() else 100 end
+    let service = try env.args(1)? else "50000" end
+    let limit = try env.args(2)?.usize()? else 100 end
     let host = "localhost"
 
     let logger = CommonLog(env.out)
@@ -21,11 +21,12 @@ actor Main
     end
 
     // Start the top server control actor.
-    HTTPServer(auth,
-        ListenHandler(env),
-        BackendMaker.create( env ),
-        logger
-        where service=service, host=host, limit=limit, reversedns=auth)
+    HTTPServer(
+      auth,
+      ListenHandler(env),
+      BackendMaker.create(env),
+      logger
+      where service=service, host=host, limit=limit, reversedns=auth)
 
 class ListenHandler
   let _env: Env
@@ -35,7 +36,7 @@ class ListenHandler
 
   fun ref listening(server: HTTPServer ref) =>
     try
-      (let host, let service) = server.local_address().name()
+      (let host, let service) = server.local_address().name()?
     else
       _env.out.print("Couldn't get local address.")
       server.dispose()
@@ -50,11 +51,11 @@ class ListenHandler
 class BackendMaker is HandlerFactory
   let _env: Env
 
-  new val create( env: Env ) =>
+  new val create(env: Env) =>
     _env = env
 
-  fun apply( session: HTTPSession tag ): HTTPHandler ref^ =>
-    BackendHandler.create( _env, session )
+  fun apply(session: HTTPSession): HTTPHandler^ =>
+    BackendHandler.create(_env, session)
 
 class BackendHandler is HTTPHandler
   """
@@ -62,16 +63,16 @@ class BackendHandler is HTTPHandler
   several requests, one at a time.
   """
   let _env: Env
-  let _session: HTTPSession tag
+  let _session: HTTPSession
 
-  new ref create( env': Env, session: HTTPSession tag ) =>
+  new ref create(env: Env, session: HTTPSession) =>
     """
     Create a context for receiving HTTP requests for a session.
     """
-    _env = env'
+    _env = env
     _session = session
 
-  fun ref apply( request: Payload val ) =>
+  fun ref apply(request: Payload val) =>
     """
     Start processing a request.
     """
@@ -89,4 +90,4 @@ class BackendHandler is HTTPHandler
       response.add_chunk(request.url.fragment)
     end
 
-    _session( consume response)
+    _session(consume response)

@@ -6,6 +6,7 @@
 #include <ast/lexer.h>
 #include <ast/source.h>
 #include <ast/stringtab.h>
+#include <pass/pass.h>
 #include <pkg/package.h>
 #include <codegen/genjit.h>
 #include <../libponyrt/pony.h>
@@ -22,8 +23,8 @@ using std::string;
 // These will be set when running a JIT'ed program.
 extern "C"
 {
-  EXPORT_SYMBOL void* __DescTable;
-  EXPORT_SYMBOL void* __DescTableSize;
+  EXPORT_SYMBOL pony_type_t** __PonyDescTablePtr;
+  EXPORT_SYMBOL size_t __PonyDescTableSize;
 }
 
 
@@ -33,21 +34,22 @@ static const char* _builtin =
   "  fun mul(a: U8): U8 => this * a\n"
   "primitive I8 is Real[I8]"
   "  new create(a: I8 = 0) => a\n"
-  "  fun neg():I8 => -this\n"
+  "  fun neg(): I8 => -this\n"
   "primitive U16 is Real[U16]"
   "  new create(a: U16 = 0) => a\n"
   "primitive I16 is Real[I16]"
   "  new create(a: I16 = 0) => a\n"
-  "  fun neg():I16 => -this\n"
+  "  fun neg(): I16 => -this\n"
   "  fun mul(a: I16): I16 => this * a\n"
   "primitive U32 is Real[U32]"
   "  new create(a: U32 = 0) => a\n"
   "primitive I32 is Real[I32]"
   "  new create(a: I32 = 0) => a\n"
-  "  fun neg():I32 => -this\n"
+  "  fun neg(): I32 => -this\n"
   "  fun mul(a: I32): I32 => this * a\n"
   "primitive U64 is Real[U64]"
   "  new create(a: U64 = 0) => a\n"
+  "  fun op_xor(a: U64): U64 => this xor a\n"
   "primitive I64 is Real[I64]"
   "  new create(a: I64 = 0) => a\n"
   "  fun neg():I64 => -this\n"
@@ -61,17 +63,18 @@ static const char* _builtin =
   "  fun div(a: U128): U128 => this / a\n"
   "primitive I128 is Real[I128]"
   "  new create(a: I128 = 0) => a\n"
-  "  fun neg():I128 => -this\n"
+  "  fun neg(): I128 => -this\n"
   "primitive ULong is Real[ULong]"
   "  new create(a: ULong = 0) => a\n"
   "primitive ILong is Real[ILong]"
   "  new create(a: ILong = 0) => a\n"
-  "  fun neg():ILong => -this\n"
+  "  fun neg(): ILong => -this\n"
   "primitive USize is Real[USize]"
   "  new create(a: USize = 0) => a\n"
+  "  fun u64(): U64 => compile_intrinsic\n"
   "primitive ISize is Real[ISize]"
   "  new create(a: ISize = 0) => a\n"
-  "  fun neg():ISize => -this\n"
+  "  fun neg(): ISize => -this\n"
   "primitive F32 is Real[F32]"
   "  new create(a: F32 = 0) => a\n"
   "primitive F64 is Real[F64]"
@@ -86,9 +89,15 @@ static const char* _builtin =
   "    envp: Pointer[Pointer[U8]] val)\n"
   "  => None\n"
   "primitive None\n"
+  "interface tag Any\n"
   "primitive Bool\n"
+  "  new create(a: Bool) => a\n"
+  "  fun op_and(a: Bool): Bool => this and a\n"
+  "  fun op_not(): Bool => not this\n"
   "class val String\n"
   "struct Pointer[A]\n"
+  "  new create() => compile_intrinsic\n"
+  "  fun tag is_null(): Bool => compile_intrinsic\n"
   "interface Seq[A]\n"
   // Fake up arrays and iterators enough to allow tests to
   // - create array literals
@@ -224,6 +233,7 @@ void PassTest::SetUp()
   package_clear_magic();
   package_suppress_build_message();
   opt.verbosity = VERBOSITY_QUIET;
+  last_pass = PASS_PARSE;
 }
 
 
@@ -239,6 +249,7 @@ void PassTest::TearDown()
   program = NULL;
   package = NULL;
   module = NULL;
+  last_pass = PASS_PARSE;
   package_done();
   codegen_pass_cleanup(&opt);
   pass_opt_done(&opt);
@@ -304,16 +315,22 @@ void PassTest::check_ast_same(ast_t* expect, ast_t* actual)
 
 void PassTest::test_compile(const char* src, const char* pass)
 {
-  DO(build_package(pass, src, _first_pkg_path, true, NULL));
+  DO(build_package(pass, src, _first_pkg_path, true, NULL, false));
 
   package = ast_child(program);
   module = ast_child(package);
 }
 
 
+void PassTest::test_compile_resume(const char* pass)
+{
+  DO(build_package(pass, NULL, NULL, true, NULL, true));
+}
+
+
 void PassTest::test_error(const char* src, const char* pass)
 {
-  DO(build_package(pass, src, _first_pkg_path, false, NULL));
+  DO(build_package(pass, src, _first_pkg_path, false, NULL, false));
 
   package = NULL;
   module = NULL;
@@ -324,7 +341,7 @@ void PassTest::test_error(const char* src, const char* pass)
 void PassTest::test_expected_errors(const char* src, const char* pass,
   const char** errors)
 {
-  DO(build_package(pass, src, _first_pkg_path, false, errors));
+  DO(build_package(pass, src, _first_pkg_path, false, errors, false));
 
   package = NULL;
   module = NULL;
@@ -335,7 +352,7 @@ void PassTest::test_expected_errors(const char* src, const char* pass,
 void PassTest::test_equiv(const char* actual_src, const char* actual_pass,
   const char* expect_src, const char* expect_pass)
 {
-  DO(build_package(expect_pass, expect_src, "expect", true, NULL));
+  DO(build_package(expect_pass, expect_src, "expect", true, NULL, false));
   ast_t* expect_ast = program;
   ast_t* expect_package = ast_child(expect_ast);
   program = NULL;
@@ -398,8 +415,9 @@ bool PassTest::run_program(int* exit_code)
   pony_assert(compile != NULL);
 
   pony_exitcode(0);
-  jit_symbol_t symbols[] = {{"__DescTable", &__DescTable},
-    {"__DescTableSize", &__DescTableSize}};
+  jit_symbol_t symbols[] = {
+    {"__PonyDescTablePtr", &__PonyDescTablePtr, sizeof(pony_type_t**)},
+    {"__PonyDescTableSize", &__PonyDescTableSize, sizeof(size_t)}};
   return gen_jit_and_run(compile, exit_code, symbols, 2);
 }
 
@@ -407,58 +425,89 @@ bool PassTest::run_program(int* exit_code)
 // Private methods
 
 void PassTest::build_package(const char* pass, const char* src,
-  const char* package_name, bool check_good, const char** expected_errors)
+  const char* package_name, bool check_good, const char** expected_errors,
+  bool resume)
 {
   ASSERT_NE((void*)NULL, pass);
-  ASSERT_NE((void*)NULL, src);
-  ASSERT_NE((void*)NULL, package_name);
 
-  if(compile != NULL)
+  if(!resume)
   {
-    codegen_cleanup(compile);
-    POOL_FREE(compile_t, compile);
-    compile = NULL;
-  }
-  ast_free(program);
-  program = NULL;
-  package = NULL;
-  module = NULL;
+    ASSERT_NE((void*)NULL, src);
+    ASSERT_NE((void*)NULL, package_name);
 
-  lexer_allow_test_symbols();
-
-  package_clear_magic();
-
-#ifndef PONY_PACKAGES_DIR
-#  error Packages directory undefined
-#else
-  if(_builtin_src != NULL)
-  {
-    package_add_magic_src("builtin", _builtin_src);
-  } else {
-    char path[FILENAME_MAX];
-    path_cat(PONY_PACKAGES_DIR, "builtin", path);
-    package_add_magic_path("builtin", path);
-  }
-#endif
-
-  package_add_magic_src(package_name, src);
-
-  package_suppress_build_message();
-
-  limit_passes(&opt, pass);
-  program = program_load(stringtab(package_name), &opt);
-
-  if((program != NULL) && (opt.limit >= PASS_REACH))
-  {
-    compile = POOL_ALLOC(compile_t);
-
-    if(!codegen_gen_test(compile, program, &opt))
+    if(compile != NULL)
     {
       codegen_cleanup(compile);
       POOL_FREE(compile_t, compile);
       compile = NULL;
     }
+    ast_free(program);
+    program = NULL;
+    package = NULL;
+    module = NULL;
+    last_pass = PASS_PARSE;
+
+    lexer_allow_test_symbols();
+
+    package_clear_magic();
+
+#ifndef PONY_PACKAGES_DIR
+#  error Packages directory undefined
+#else
+    if(_builtin_src != NULL)
+    {
+      package_add_magic_src("builtin", _builtin_src);
+    } else {
+      char path[FILENAME_MAX];
+      path_cat(PONY_PACKAGES_DIR, "builtin", path);
+      package_add_magic_path("builtin", path);
+    }
+#endif
+
+    package_add_magic_src(package_name, src);
+
+    package_suppress_build_message();
+
+    limit_passes(&opt, pass);
+    program = program_load(stringtab(package_name), &opt);
+
+    if((program != NULL) && (opt.limit >= PASS_REACH))
+    {
+      compile = POOL_ALLOC(compile_t);
+
+      if(!codegen_gen_test(compile, program, &opt, PASS_PARSE))
+      {
+        codegen_cleanup(compile);
+        POOL_FREE(compile_t, compile);
+        compile = NULL;
+      }
+    }
+  } else {
+    ASSERT_NE((void*)NULL, program);
+
+    limit_passes(&opt, pass);
+
+    if(ast_passes_program(program, &opt))
+    {
+      if(opt.limit >= PASS_REACH)
+      {
+        if(compile == NULL)
+          compile = POOL_ALLOC(compile_t);
+
+        if(!codegen_gen_test(compile, program, &opt, last_pass))
+        {
+          codegen_cleanup(compile);
+          POOL_FREE(compile_t, compile);
+          compile = NULL;
+        }
+      }
+    } else {
+      ast_free(program);
+      program = NULL;
+    }
   }
+
+  last_pass = opt.limit;
 
   if(expected_errors != NULL)
   {

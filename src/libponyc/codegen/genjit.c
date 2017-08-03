@@ -1,8 +1,8 @@
 #include "genjit.h"
 #include "genexe.h"
 #include "genopt.h"
-
 #include <llvm-c/ExecutionEngine.h>
+#include <string.h>
 
 static LLVMBool jit_init(compile_t* c, LLVMExecutionEngineRef* engine)
 {
@@ -23,7 +23,7 @@ bool gen_jit_and_run(compile_t* c, int* exit_code, jit_symbol_t* symbols,
 
   LLVMValueRef main_fn = gen_main(c, t_main, t_env);
 
-  if(!genopt(c, false))
+  if(!genopt(c, true))
     return false;
 
   if(LLVMVerifyModule(c->module, LLVMReturnStatusAction, NULL) != 0)
@@ -43,7 +43,7 @@ bool gen_jit_and_run(compile_t* c, int* exit_code, jit_symbol_t* symbols,
       return false;
     }
 
-    *symbols[i].address = (void*)address;
+    memcpy(symbols[i].address, (void*)(uintptr_t)address, symbols[i].size);
   }
 
   const char* argv[] = {"ponyjit", NULL};

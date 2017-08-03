@@ -3,7 +3,7 @@ use "net"
 
 class _ClientConnHandler is TCPConnectionNotify
   """
-  This is the network notification handler for the client.  It passes
+  This is the network notification handler for the client. It passes
   received data to the `HTTPParser` to assemble response `Payload` objects.
   """
   let _session: _ClientConnection
@@ -37,7 +37,9 @@ class _ClientConnHandler is TCPConnectionNotify
     """
     _session._auth_failed(conn)
 
-  fun ref received(conn: TCPConnection ref, data: Array[U8] iso): Bool =>
+  fun ref received(conn: TCPConnection ref, data: Array[U8] iso,
+    times: USize): Bool
+  =>
    """
    Pass a received chunk of data to the `_HTTPParser`.
    """
@@ -46,7 +48,7 @@ class _ClientConnHandler is TCPConnectionNotify
 
     // Let the parser take a look at what has been received.
     try
-      _parser.parse(_buffer)
+      _parser.parse(_buffer)?
     else
       // Any syntax errors will terminate the connection.
       conn.close()
@@ -63,14 +65,14 @@ class _ClientConnHandler is TCPConnectionNotify
 
   fun ref throttled(conn: TCPConnection ref) =>
     """
-    TCP connection wants us to stop sending.  We do not do anything with
+    TCP connection wants us to stop sending. We do not do anything with
     this here;  just pass it on to the `HTTPSession`.
     """
     _session.throttled()
 
   fun ref unthrottle(conn: TCPConnection ref) =>
     """
-    TCP can accept more data now.  We just pass this on to the
+    TCP can accept more data now. We just pass this on to the
     `HTTPSession`
     """
     _session.unthrottled()

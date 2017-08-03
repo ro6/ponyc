@@ -16,6 +16,8 @@ LLVMValueRef gen_fieldload(compile_t* c, ast_t* ast);
 
 LLVMValueRef gen_fieldembed(compile_t* c, ast_t* ast);
 
+LLVMValueRef gen_tupleelemptr(compile_t* c, ast_t* ast);
+
 LLVMValueRef gen_tuple(compile_t* c, ast_t* ast);
 
 LLVMValueRef gen_localdecl(compile_t* c, ast_t* ast);
@@ -27,6 +29,8 @@ LLVMValueRef gen_localload(compile_t* c, ast_t* ast);
 LLVMValueRef gen_addressof(compile_t* c, ast_t* ast);
 
 LLVMValueRef gen_digestof(compile_t* c, ast_t* ast);
+
+void gen_digestof_fun(compile_t* c, reach_type_t* t);
 
 LLVMValueRef gen_int(compile_t* c, ast_t* ast);
 

@@ -15,10 +15,10 @@ actor _Bench[A: Any #share] is _Benchmark
       @pony_triggergc[None](this)
       let start = Time.nanos()
       for i in Range[U64](0, _ops) do
-        DoNotOptimise[A](_f())
+        DoNotOptimise[A](_f()?)
       end
       let t = Time.nanos() - start
-      _notify._result(_name, _ops, t/_ops)
+      _notify._result(_name, _ops, t / _ops)
     else
       _notify._failure(_name, false)
     end

@@ -1,6 +1,7 @@
 #include "gentrace.h"
 #include "gencall.h"
 #include "gendesc.h"
+#include "genfun.h"
 #include "genname.h"
 #include "genprim.h"
 #include "../type/cap.h"
@@ -290,7 +291,11 @@ static trace_t trace_type_isect(ast_t* type)
 
 static trace_t trace_type_nominal(ast_t* type)
 {
-  switch(ast_id((ast_t*)ast_data(type)))
+  if(is_bare(type))
+    return TRACE_PRIMITIVE;
+
+  ast_t* def = (ast_t*)ast_data(type);
+  switch(ast_id(def))
   {
     case TK_INTERFACE:
     case TK_TRAIT:
@@ -406,7 +411,7 @@ static trace_t trace_type_dst_cap(trace_t src_trace, trace_t dst_trace,
         case TRACE_DYNAMIC:
           if(ast_id(src_type) == TK_NOMINAL)
             return TRACE_STATIC;
-          return TRACE_VAL_UNKNOWN;
+          return TRACE_DYNAMIC;
 
         case TRACE_TAG_UNKNOWN:
           return TRACE_TAG_UNKNOWN;
@@ -439,7 +444,7 @@ static trace_t trace_type_dst_cap(trace_t src_trace, trace_t dst_trace,
         case TRACE_DYNAMIC:
           if(ast_id(src_type) == TK_NOMINAL)
             return TRACE_STATIC;
-          return TRACE_MUT_UNKNOWN;
+          return TRACE_DYNAMIC;
 
         case TRACE_TAG_UNKNOWN:
           return TRACE_TAG_UNKNOWN;
@@ -478,6 +483,7 @@ static void trace_maybe(compile_t* c, LLVMValueRef ctx, LLVMValueRef object,
   gentrace(c, ctx, object, object, elem, elem);
   LLVMBuildBr(c->builder, is_true);
 
+  LLVMMoveBasicBlockAfter(is_true, LLVMGetInsertBlock(c->builder));
   LLVMPositionBuilderAtEnd(c->builder, is_true);
 }
 
@@ -489,7 +495,8 @@ static void trace_known(compile_t* c, LLVMValueRef ctx, LLVMValueRef object,
   LLVMValueRef args[4];
   args[0] = ctx;
   args[1] = LLVMBuildBitCast(c->builder, object, c->object_ptr, "");
-  args[2] = LLVMBuildBitCast(c->builder, t->desc, c->descriptor_ptr, "");
+  args[2] = LLVMBuildBitCast(c->builder, ((compile_type_t*)t->c_type)->desc,
+    c->descriptor_ptr, "");
   args[3] = LLVMConstInt(c->i32, mutability, false);
 
   gencall_runtime(c, "pony_traceknown", args, 4, "");
@@ -758,6 +765,7 @@ static void trace_dynamic_tuple(compile_t* c, LLVMValueRef ctx,
 
   // Continue with other possible tracings.
   LLVMBuildBr(c->builder, is_false);
+  LLVMMoveBasicBlockAfter(is_false, LLVMGetInsertBlock(c->builder));
   LLVMPositionBuilderAtEnd(c->builder, is_false);
 }
 
@@ -822,6 +830,7 @@ static void trace_dynamic_nominal(compile_t* c, LLVMValueRef ctx,
     LLVMBuildBr(c->builder, is_false);
 
   // Carry on, whether we have traced or not.
+  LLVMMoveBasicBlockAfter(is_false, LLVMGetInsertBlock(c->builder));
   LLVMPositionBuilderAtEnd(c->builder, is_false);
 }
 
@@ -933,7 +942,8 @@ void gentrace_prototype(compile_t* c, reach_type_t* t)
   if(!need_trace)
     return;
 
-  t->trace_fn = codegen_addfun(c, genname_trace(t->name), c->trace_type);
+  ((compile_type_t*)t->c_type)->trace_fn = codegen_addfun(c,
+    genname_trace(t->name), c->trace_type);
 }
 
 void gentrace(compile_t* c, LLVMValueRef ctx, LLVMValueRef src_value,
@@ -1008,6 +1018,7 @@ void gentrace(compile_t* c, LLVMValueRef ctx, LLVMValueRef src_value,
       LLVMBasicBlockRef next_block = codegen_block(c, "");
       trace_dynamic(c, ctx, dst_value, src_type, dst_type, NULL, next_block);
       LLVMBuildBr(c->builder, next_block);
+      LLVMMoveBasicBlockAfter(next_block, LLVMGetInsertBlock(c->builder));
       LLVMPositionBuilderAtEnd(c->builder, next_block);
       return;
     }

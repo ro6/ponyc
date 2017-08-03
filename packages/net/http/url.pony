@@ -23,22 +23,22 @@ class val URL
     Parse the URL string into its components. If it isn't URL encoded, encode
     it. If existing URL encoding is invalid, raise an error.
     """
-    _parse(from)
+    _parse(from)?
 
     if not URLEncode.check_scheme(scheme) then error end
-    user = URLEncode.encode(user, URLPartUser, percent_encoded)
-    password = URLEncode.encode(password, URLPartPassword, percent_encoded)
-    host = URLEncode.encode(host, URLPartHost, percent_encoded)
-    path = URLEncode.encode(path, URLPartPath, percent_encoded)
-    query = URLEncode.encode(query, URLPartQuery, percent_encoded)
-    fragment = URLEncode.encode(fragment, URLPartFragment, percent_encoded)
+    user = URLEncode.encode(user, URLPartUser, percent_encoded)?
+    password = URLEncode.encode(password, URLPartPassword, percent_encoded)?
+    host = URLEncode.encode(host, URLPartHost, percent_encoded)?
+    path = URLEncode.encode(path, URLPartPath, percent_encoded)?
+    query = URLEncode.encode(query, URLPartQuery, percent_encoded)?
+    fragment = URLEncode.encode(fragment, URLPartFragment, percent_encoded)?
 
   new val valid(from: String) ? =>
     """
     Parse the URL string into its components. If it isn't URL encoded, raise an
     error.
     """
-    _parse(from)
+    _parse(from)?
 
     if not is_valid() then
       error
@@ -60,8 +60,9 @@ class val URL
     """
     Combine the components into a string.
     """
-    let len = scheme.size() + 3 + user.size() + 1 + password.size() + 1 +
-      host.size() + 6 + path.size() + 1 + query.size() + 1 + fragment.size()
+    let len =
+      scheme.size() + 3 + user.size() + 1 + password.size() + 1 + host.size()
+        + 6 + path.size() + 1 + query.size() + 1 + fragment.size()
     let s = recover String(len) end
 
     if scheme.size() > 0 then
@@ -124,8 +125,7 @@ class val URL
     match scheme
     | "http" => 80
     | "https" => 443
-    else
-      0
+    else 0
     end
 
   fun ref _parse(from: String) ? =>
@@ -156,7 +156,7 @@ class val URL
 
     port =
       if port_str.size() > 0 then
-        port_str.u16()
+        port_str.u16()?
       else
         default_port()
       end
@@ -171,7 +171,7 @@ class val URL
       var i = USize(0)
 
       while i < from.size() do
-        let c = from(i)
+        let c = from(i)?
 
         if c == ':' then
           // Scheme found.
@@ -190,16 +190,19 @@ class val URL
     // End of string reached without finding any relevant terminators.
     (0, "")
 
-  fun _parse_part(from: String, prefix: String, terminators: String,
-    offset: ISize): (/*offset*/ISize, /*part*/String)
+  fun _parse_part(
+    from: String,
+    prefix: String,
+    terminators: String,
+    offset: ISize)
+    : (/*offset*/ISize, /*part*/String)
   =>
     """
-    Attempt to parse the specified part out of the given string.
-    Only attempt the parse if the given prefix is found first. Pass "" if no
-    prefix is needed.
-    The part ends when any one of the given terminator characters is found, or
-    the end of the input is reached.
-    The offset of the terminator is returned, if one is found.
+    Attempt to parse the specified part out of the given string. Only attempt
+    the parse if the given prefix is found first. Pass "" if no prefix is
+    needed. The part ends when any one of the given terminator characters is
+    found, or the end of the input is reached. The offset of the terminator is
+    returned, if one is found.
     """
     if (prefix.size() > 0) and (not from.at(prefix, offset)) then
       // Prefix not found.
@@ -212,11 +215,11 @@ class val URL
       var i = start.usize()
 
       while i < from.size() do
-        let c = from(i)
+        let c = from(i)?
 
         var j = USize(0)
         while j < terminators.size() do
-          if terminators(j) == c then
+          if terminators(j)? == c then
             // Terminator found.
             return (i.isize(), from.substring(start, i.isize()))
           end
@@ -234,15 +237,14 @@ class val URL
   fun _split(src: String, separator: U8): (String, String) =>
     """
     Split the given string in 2 around the first instance of the specified
-    separator.
-    If the string does not contain the separator then the first resulting
-    string is the whole src and the second is empty.
+    separator. If the string does not contain the separator then the first
+    resulting string is the whole src and the second is empty.
     """
     try
       var i = USize(0)
 
       while i < src.size() do
-        if src(i) == separator then
+        if src(i)? == separator then
           // Separator found.
           return (src.substring(0, i.isize()), src.substring((i + 1).isize()))
         end
@@ -259,7 +261,7 @@ class val URL
     Split the given "host and port" string into the host and port parts.
     """
     try
-      if (hostport.size() == 0) or (hostport(0) != '[') then
+      if (hostport.size() == 0) or (hostport(0)? != '[') then
         // This is not an IPv6 format host, just split at the first ':'.
         return _split(hostport, ':')
       end
@@ -269,7 +271,7 @@ class val URL
       var terminator = U8(']')
 
       while i < hostport.size() do
-        if hostport(i) == terminator then
+        if hostport(i)? == terminator then
           if terminator == ':' then
             // ':' found, now we can separate the host and port
             return (hostport.substring(0, i.isize()),

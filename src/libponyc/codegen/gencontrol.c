@@ -1,6 +1,7 @@
 #include "gencontrol.h"
-#include "genexpr.h"
 #include "gencall.h"
+#include "genexpr.h"
+#include "genfun.h"
 #include "genname.h"
 #include "../pass/expr.h"
 #include "../type/subtype.h"
@@ -39,10 +40,10 @@ LLVMValueRef gen_if(compile_t* c, ast_t* ast)
   ast_t* right_type = ast_type(right);
 
   // We will have no type if both branches have return statements.
-  reach_type_t* phi_type = NULL;
+  compile_type_t* phi_type = NULL;
 
-  if(!is_control_type(type))
-    phi_type = reach_type(c->reach, type);
+  if(needed && !ast_checkflag(ast, AST_FLAG_JUMPS_AWAY))
+    phi_type = (compile_type_t*)reach_type(c->reach, type)->c_type;
 
   LLVMValueRef c_value = gen_expr(c, cond);
 
@@ -68,7 +69,7 @@ LLVMValueRef gen_if(compile_t* c, ast_t* ast)
   LLVMBasicBlockRef post_block = NULL;
 
   // If both branches return, we have no post block.
-  if(!is_control_type(type))
+  if(!ast_checkflag(ast, AST_FLAG_JUMPS_AWAY))
     post_block = codegen_block(c, "if_post");
 
   LLVMValueRef test = LLVMBuildTrunc(c->builder, c_value, c->i1, "");
@@ -103,6 +104,7 @@ LLVMValueRef gen_if(compile_t* c, ast_t* ast)
   }
 
   // Right branch.
+  LLVMMoveBasicBlockAfter(else_block, LLVMGetInsertBlock(c->builder));
   LLVMPositionBuilderAtEnd(c->builder, else_block);
   LLVMValueRef r_value;
 
@@ -130,10 +132,11 @@ LLVMValueRef gen_if(compile_t* c, ast_t* ast)
   }
 
   // If both sides return, we return a sentinel value.
-  if(is_control_type(type))
+  if(ast_checkflag(ast, AST_FLAG_JUMPS_AWAY))
     return GEN_NOVALUE;
 
   // Continue in the post block.
+  LLVMMoveBasicBlockAfter(post_block, LLVMGetInsertBlock(c->builder));
   LLVMPositionBuilderAtEnd(c->builder, post_block);
 
   if(needed)
@@ -152,6 +155,17 @@ LLVMValueRef gen_if(compile_t* c, ast_t* ast)
   return GEN_NOTNEEDED;
 }
 
+LLVMValueRef gen_iftype(compile_t* c, ast_t* ast)
+{
+  AST_GET_CHILDREN(ast, left, right);
+  AST_GET_CHILDREN(left, subtype, supertype, body);
+
+  if(is_subtype_constraint(subtype, supertype, NULL, c->opt))
+    return gen_expr(c, body);
+
+  return gen_expr(c, right);
+}
+
 LLVMValueRef gen_while(compile_t* c, ast_t* ast)
 {
   bool needed = is_result_needed(ast);
@@ -161,10 +175,10 @@ LLVMValueRef gen_while(compile_t* c, ast_t* ast)
   ast_t* body_type = ast_type(body);
   ast_t* else_type = ast_type(else_clause);
 
-  reach_type_t* phi_type = NULL;
+  compile_type_t* phi_type = NULL;
 
-  if(needed && !is_control_type(type))
-    phi_type = reach_type(c->reach, type);
+  if(needed && !ast_checkflag(ast, AST_FLAG_JUMPS_AWAY))
+    phi_type = (compile_type_t*)reach_type(c->reach, type)->c_type;
 
   LLVMBasicBlockRef init_block = codegen_block(c, "while_init");
   LLVMBasicBlockRef body_block = codegen_block(c, "while_body");
@@ -175,7 +189,7 @@ LLVMValueRef gen_while(compile_t* c, ast_t* ast)
   // start the post block so that a break can modify the phi node
   LLVMValueRef phi = GEN_NOTNEEDED;
 
-  if(!is_control_type(type))
+  if(!ast_checkflag(ast, AST_FLAG_JUMPS_AWAY))
   {
     // Start the post block so that a break can modify the phi node.
     post_block = codegen_block(c, "while_post");
@@ -238,6 +252,7 @@ LLVMValueRef gen_while(compile_t* c, ast_t* ast)
   // else
   // If the loop doesn't generate a value (doesn't execute, or continues on the
   // last iteration), the else clause generates the value.
+  LLVMMoveBasicBlockAfter(else_block, LLVMGetInsertBlock(c->builder));
   LLVMPositionBuilderAtEnd(c->builder, else_block);
   LLVMValueRef r_value = gen_expr(c, else_clause);
   LLVMBasicBlockRef else_from = NULL;
@@ -254,10 +269,11 @@ LLVMValueRef gen_while(compile_t* c, ast_t* ast)
     LLVMBuildBr(c->builder, post_block);
   }
 
-  if(is_control_type(type))
+  if(ast_checkflag(ast, AST_FLAG_JUMPS_AWAY))
     return GEN_NOVALUE;
 
   // post
+  LLVMMoveBasicBlockAfter(post_block, LLVMGetInsertBlock(c->builder));
   LLVMPositionBuilderAtEnd(c->builder, post_block);
 
   if(needed)
@@ -283,10 +299,10 @@ LLVMValueRef gen_repeat(compile_t* c, ast_t* ast)
   ast_t* body_type = ast_type(body);
   ast_t* else_type = ast_type(else_clause);
 
-  reach_type_t* phi_type = NULL;
+  compile_type_t* phi_type = NULL;
 
-  if(needed && !is_control_type(type))
-    phi_type = reach_type(c->reach, type);
+  if(needed && !ast_checkflag(ast, AST_FLAG_JUMPS_AWAY))
+    phi_type = (compile_type_t*)reach_type(c->reach, type)->c_type;
 
   LLVMBasicBlockRef body_block = codegen_block(c, "repeat_body");
   LLVMBasicBlockRef cond_block = codegen_block(c, "repeat_cond");
@@ -297,7 +313,7 @@ LLVMValueRef gen_repeat(compile_t* c, ast_t* ast)
   // start the post block so that a break can modify the phi node
   LLVMValueRef phi = GEN_NOTNEEDED;
 
-  if(!is_control_type(type))
+  if(!ast_checkflag(ast, AST_FLAG_JUMPS_AWAY))
   {
     // Start the post block so that a break can modify the phi node.
     post_block = codegen_block(c, "repeat_post");
@@ -343,6 +359,7 @@ LLVMValueRef gen_repeat(compile_t* c, ast_t* ast)
   // cond block
   // This is only evaluated from a continue, jumping either back to the body
   // or to the else block.
+  LLVMMoveBasicBlockAfter(cond_block, LLVMGetInsertBlock(c->builder));
   LLVMPositionBuilderAtEnd(c->builder, cond_block);
   LLVMValueRef i_value = gen_expr(c, cond);
 
@@ -356,6 +373,7 @@ LLVMValueRef gen_repeat(compile_t* c, ast_t* ast)
 
   // else
   // Only happens for a continue in the last iteration.
+  LLVMMoveBasicBlockAfter(else_block, LLVMGetInsertBlock(c->builder));
   LLVMPositionBuilderAtEnd(c->builder, else_block);
   LLVMValueRef else_value = gen_expr(c, else_clause);
   LLVMBasicBlockRef else_from = NULL;
@@ -372,10 +390,11 @@ LLVMValueRef gen_repeat(compile_t* c, ast_t* ast)
     LLVMBuildBr(c->builder, post_block);
   }
 
-  if(is_control_type(type))
+  if(ast_checkflag(ast, AST_FLAG_JUMPS_AWAY))
     return GEN_NOVALUE;
 
   // post
+  LLVMMoveBasicBlockAfter(post_block, LLVMGetInsertBlock(c->builder));
   LLVMPositionBuilderAtEnd(c->builder, post_block);
 
   if(needed)
@@ -495,17 +514,17 @@ LLVMValueRef gen_try(compile_t* c, ast_t* ast)
   ast_t* body_type = ast_type(body);
   ast_t* else_type = ast_type(else_clause);
 
-  reach_type_t* phi_type = NULL;
+  compile_type_t* phi_type = NULL;
 
   // We will have no type if both branches have return statements.
-  if(!is_control_type(type))
-    phi_type = reach_type(c->reach, type);
+  if(needed && !ast_checkflag(ast, AST_FLAG_JUMPS_AWAY))
+    phi_type = (compile_type_t*)reach_type(c->reach, type)->c_type;
 
   LLVMBasicBlockRef block = LLVMGetInsertBlock(c->builder);
   LLVMBasicBlockRef else_block = codegen_block(c, "try_else");
   LLVMBasicBlockRef post_block = NULL;
 
-  if(!is_control_type(type))
+  if(!ast_checkflag(ast, AST_FLAG_JUMPS_AWAY))
     post_block = codegen_block(c, "try_post");
 
   // Keep a reference to the else block.
@@ -535,6 +554,7 @@ LLVMValueRef gen_try(compile_t* c, ast_t* ast)
   codegen_poptry(c);
 
   // Else block.
+  LLVMMoveBasicBlockAfter(else_block, LLVMGetInsertBlock(c->builder));
   LLVMPositionBuilderAtEnd(c->builder, else_block);
 
   // The landing pad is marked as a cleanup, since exceptions are typeless and
@@ -579,10 +599,11 @@ LLVMValueRef gen_try(compile_t* c, ast_t* ast)
   }
 
   // If both sides return, we return a sentinel value.
-  if(is_control_type(type))
+  if(ast_checkflag(ast, AST_FLAG_JUMPS_AWAY))
     return GEN_NOVALUE;
 
   // Continue in the post block.
+  LLVMMoveBasicBlockAfter(post_block, LLVMGetInsertBlock(c->builder));
   LLVMPositionBuilderAtEnd(c->builder, post_block);
 
   if(needed)

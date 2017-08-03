@@ -62,36 +62,38 @@ static const permission_def_t _entity_def[DEF_ENTITY_COUNT] =
 };
 
 #define METHOD_CAP 0
-#define METHOD_RETURN 2
-#define METHOD_ERROR 4
-#define METHOD_BODY 6
+#define METHOD_BARE 2
+#define METHOD_RETURN 4
+#define METHOD_ERROR 6
+#define METHOD_BODY 8
 
 // Index by DEF_<ENTITY> + DEF_<METHOD>
 static const permission_def_t _method_def[DEF_METHOD_COUNT] =
 { //                           cap
-  //                           | return
-  //                           | | error
-  //                           | | | body
-  { "actor function",         "X X X Y" },
-  { "class function",         "X X X Y" },
-  { "struct function",        "X X X Y" },
-  { "primitive function",     "X X X Y" },
-  { "trait function",         "X X X X" },
-  { "interface function",     "X X X X" },
+  //                           | bare
+  //                           | | return
+  //                           | | | error
+  //                           | | | | body
+  { "actor function",         "X X X X Y" },
+  { "class function",         "X X X X Y" },
+  { "struct function",        "X X X X Y" },
+  { "primitive function",     "X X X X Y" },
+  { "trait function",         "X X X X X" },
+  { "interface function",     "X X X X X" },
   { "type alias function",    NULL },
-  { "actor behaviour",        "N N N Y" },
+  { "actor behaviour",        "N N N N Y" },
   { "class behaviour",        NULL },
   { "struct behaviour",       NULL },
   { "primitive behaviour",    NULL },
-  { "trait behaviour",        "N N N X" },
-  { "interface behaviour",    "N N N X" },
+  { "trait behaviour",        "N N N N X" },
+  { "interface behaviour",    "N N N N X" },
   { "type alias behaviour",   NULL },
-  { "actor constructor",      "N N N Y" },
-  { "class constructor",      "X N X Y" },
-  { "struct constructor",     "X N X Y" },
-  { "primitive constructor",  "N N X Y" },
-  { "trait constructor",      "X N X N" },
-  { "interface constructor",  "X N X N" },
+  { "actor constructor",      "N N N N Y" },
+  { "class constructor",      "X N N X Y" },
+  { "struct constructor",     "X N N X Y" },
+  { "primitive constructor",  "N N N X Y" },
+  { "trait constructor",      "X N N X N" },
+  { "interface constructor",  "X N N X N" },
   { "type alias constructor", NULL }
 };
 
@@ -238,8 +240,15 @@ static bool check_method(pass_opt_t* opt, ast_t* ast, int method_def_index)
   AST_GET_CHILDREN(ast, cap, id, type_params, params, return_type,
     error, body, docstring);
 
-  if(!check_permission(opt, def, METHOD_CAP, cap, "receiver capability", cap))
+  if(ast_id(cap) == TK_AT)
+  {
+    if(!check_permission(opt, def, METHOD_BARE, cap, "bareness", cap))
+      r = false;
+  } else if(!check_permission(opt, def, METHOD_CAP, cap, "receiver capability",
+    cap))
+  {
     r = false;
+  }
 
   if(!check_id_method(opt, id))
     r = false;
@@ -351,10 +360,20 @@ static ast_result_t syntax_entity(pass_opt_t* opt, ast_t* ast,
   AST_GET_CHILDREN(ast, id, typeparams, defcap, provides, members, c_api);
 
   // Check if we're called Main
-  if(def->permissions[ENTITY_MAIN] == 'N' && ast_name(id) == stringtab("Main"))
+  if(ast_name(id) == stringtab("Main"))
   {
-    ast_error(opt->check.errors, ast, "Main must be an actor");
-    r = AST_ERROR;
+    if(ast_id(typeparams) != TK_NONE)
+    {
+      ast_error(opt->check.errors, typeparams,
+        "the Main actor cannot have type parameters");
+      r = AST_ERROR;
+    }
+
+    if(def->permissions[ENTITY_MAIN] == 'N')
+    {
+      ast_error(opt->check.errors, ast, "Main must be an actor");
+      r = AST_ERROR;
+    }
   }
 
   if(!check_id_type(opt, id, def->desc))
@@ -442,10 +461,18 @@ static ast_result_t syntax_thistype(pass_opt_t* opt, ast_t* ast)
 }
 
 
-static ast_result_t syntax_arrowtype(pass_opt_t* opt, ast_t* ast)
+static ast_result_t syntax_arrow(pass_opt_t* opt, ast_t* ast)
 {
   pony_assert(ast != NULL);
   AST_GET_CHILDREN(ast, left, right);
+
+  if((opt->check.frame->constraint != NULL) ||
+    (opt->check.frame->iftype_constraint != NULL))
+  {
+    ast_error(opt->check.errors, ast,
+      "arrow types can't be used as type constraints");
+    return AST_ERROR;
+  }
 
   switch(ast_id(right))
   {
@@ -465,6 +492,19 @@ static ast_result_t syntax_arrowtype(pass_opt_t* opt, ast_t* ast)
       return AST_ERROR;
 
     default: {}
+  }
+
+  return AST_OK;
+}
+
+
+static ast_result_t syntax_tupletype(pass_opt_t* opt, ast_t* ast)
+{
+  if(opt->check.frame->constraint != NULL)
+  {
+    ast_error(opt->check.errors, ast,
+      "tuple types can't be used as type constraints");
+    return AST_ERROR;
   }
 
   return AST_OK;
@@ -784,10 +824,15 @@ static bool syntax_ifdef_cond(pass_opt_t* opt, ast_t* ast, const char* context)
 
   switch(ast_id(ast))
   {
+
     case TK_AND:
     case TK_OR:
     case TK_NOT:
       // Valid node.
+      break;
+
+    case TK_NONE:
+      // Valid because we have an optional TK_QUESTION in TK_AND and TK_OR.
       break;
 
     case TK_STRING:
@@ -905,6 +950,41 @@ static ast_result_t syntax_lambda_capture(pass_opt_t* opt, ast_t* ast)
 }
 
 
+static ast_result_t syntax_barelambdatype(pass_opt_t* opt, ast_t* ast)
+{
+  AST_GET_CHILDREN(ast, fun_cap, id, typeparams, params, return_type, partial,
+    obj_cap, obj_mod);
+
+  if(ast_id(fun_cap) != TK_NONE)
+  {
+    ast_error(opt->check.errors, fun_cap, "a bare lambda cannot specify a "
+      "receiver capability");
+    return AST_ERROR;
+  }
+
+  if(ast_id(typeparams) != TK_NONE)
+  {
+    ast_error(opt->check.errors, typeparams, "a bare lambda cannot specify "
+      "type parameters");
+    return AST_ERROR;
+  }
+
+  switch(ast_id(obj_cap))
+  {
+    case TK_VAL:
+    case TK_NONE:
+      break;
+
+    default:
+      ast_error(opt->check.errors, obj_cap, "a bare lambda can only have a "
+        "'val' capability");
+      return AST_ERROR;
+  }
+
+  return AST_OK;
+}
+
+
 static ast_result_t syntax_compile_intrinsic(pass_opt_t* opt, ast_t* ast)
 {
   ast_t* parent = ast_parent(ast);
@@ -985,9 +1065,11 @@ static ast_result_t syntax_compile_error(pass_opt_t* opt, ast_t* ast)
 
 static ast_result_t syntax_lambda(pass_opt_t* opt, ast_t* ast)
 {
-  pony_assert(ast_id(ast) == TK_LAMBDA);
+  pony_assert((ast_id(ast) == TK_LAMBDA) || (ast_id(ast) == TK_BARELAMBDA));
   AST_GET_CHILDREN(ast, receiver_cap, name, t_params, params, captures,
     ret_type, raises, body, reference_cap);
+  bool r = true;
+
   switch(ast_id(ret_type))
   {
     case TK_ISO:
@@ -1001,9 +1083,57 @@ static ast_result_t syntax_lambda(pass_opt_t* opt, ast_t* ast)
         ast_print_type(ret_type));
       ast_error_continue(opt->check.errors, ret_type, "lambda return type "
         "cannot be capability");
-      return AST_ERROR;
+      r = false;
     }
     default: {}
+  }
+
+  if(ast_id(ast) == TK_BARELAMBDA)
+  {
+    if(ast_id(receiver_cap) != TK_NONE)
+    {
+      ast_error(opt->check.errors, receiver_cap, "a bare lambda cannot specify "
+        "a receiver capability");
+      r = false;
+    }
+
+    if(ast_id(t_params) != TK_NONE)
+    {
+      ast_error(opt->check.errors, t_params, "a bare lambda cannot specify "
+        "type parameters");
+      r = false;
+    }
+
+    if(ast_id(captures) != TK_NONE)
+    {
+      ast_error(opt->check.errors, captures, "a bare lambda cannot specify "
+        "captures");
+      r = false;
+    }
+
+    switch(ast_id(reference_cap))
+    {
+      case TK_VAL:
+      case TK_NONE:
+        break;
+
+      default:
+        ast_error(opt->check.errors, reference_cap, "a bare lambda can only "
+          "have a 'val' capability");
+        r = false;
+    }
+  }
+
+  ast_t* param = ast_child(params);
+  while(param != NULL)
+  {
+    if(ast_id(ast_childidx(param, 1)) == TK_NONE)
+    {
+      ast_error(opt->check.errors, param,
+        "a lambda parameter must specify a type");
+      r = false;
+    }
+    param = ast_sibling(param);
   }
 
   ast_t* capture = ast_child(captures);
@@ -1013,19 +1143,12 @@ static ast_result_t syntax_lambda(pass_opt_t* opt, ast_t* ast)
     {
       ast_error(opt->check.errors, capture,
         "use a named capture to capture 'this'");
-      return AST_ERROR;
+      r = false;
     }
     capture = ast_sibling(capture);
   }
 
-  if(ast_id(reference_cap) == TK_QUESTION)
-  {
-    ast_error(opt->check.errors, ast,
-      "lambda ... end is no longer supported syntax; use {...} for lambdas");
-    return AST_ERROR;
-  }
-
-  return AST_OK;
+  return r ? AST_OK : AST_ERROR;
 }
 
 
@@ -1077,6 +1200,7 @@ static ast_result_t syntax_cap(pass_opt_t* opt, ast_t* ast)
     case TK_ARROW:
     case TK_OBJECT:
     case TK_LAMBDA:
+    case TK_BARELAMBDA:
     case TK_RECOVER:
     case TK_CONSUME:
     case TK_FUN:
@@ -1090,6 +1214,7 @@ static ast_result_t syntax_cap(pass_opt_t* opt, ast_t* ast)
     case TK_CLASS:
     case TK_ACTOR:
     case TK_LAMBDATYPE:
+    case TK_BARELAMBDATYPE:
       return AST_OK;
 
     default: {}
@@ -1103,11 +1228,59 @@ static ast_result_t syntax_cap(pass_opt_t* opt, ast_t* ast)
 static ast_result_t syntax_cap_set(pass_opt_t* opt, ast_t* ast)
 {
   // Cap sets can only appear in type parameter constraints.
-  if(opt->check.frame->constraint == NULL)
+  if((opt->check.frame->constraint == NULL) &&
+    (opt->check.frame->iftype_constraint == NULL))
   {
     ast_error(opt->check.errors, ast,
       "a capability set can only appear in a type constraint");
     return AST_ERROR;
+  }
+
+  return AST_OK;
+}
+
+
+static ast_result_t syntax_annotation(pass_opt_t* opt, ast_t* ast)
+{
+  pony_assert(ast_id(ast) == TK_ANNOTATION);
+
+  const char ponyint[] = "ponyint";
+
+  for(ast_t* child = ast_child(ast); child != NULL; child = ast_sibling(child))
+  {
+    const char* str = ast_name(child);
+    if(strlen(str) < (sizeof ponyint - 1))
+      continue;
+
+    if(strncmp(str, ponyint, sizeof ponyint - 1) == 0)
+    {
+      ast_error(opt->check.errors, child,
+        "annotations starting with 'ponyint' are reserved for internal use");
+      return AST_ERROR;
+    }
+  }
+
+  return AST_OK;
+}
+
+
+static ast_result_t syntax_as(pass_opt_t* opt, ast_t* ast)
+{
+  pony_assert(ast_id(ast) == TK_AS);
+  AST_GET_CHILDREN(ast, expr);
+
+  switch (ast_id(expr))
+  {
+    case TK_INT:
+    case TK_FLOAT:
+      ast_error(opt->check.errors, expr,
+        "Cannot cast uninferred numeric literal");
+      ast_error_continue(opt->check.errors, expr,
+        "To give a numeric literal a specific type, "
+        "use the constructor of that numeric type");
+      return AST_ERROR;
+
+    default: break;
   }
 
   return AST_OK;
@@ -1134,7 +1307,8 @@ ast_result_t pass_syntax(ast_t** astp, pass_opt_t* options)
     case TK_TRAIT:      r = syntax_entity(options, ast, DEF_TRAIT); break;
     case TK_INTERFACE:  r = syntax_entity(options, ast, DEF_INTERFACE); break;
     case TK_THISTYPE:   r = syntax_thistype(options, ast); break;
-    case TK_ARROW:      r = syntax_arrowtype(options, ast); break;
+    case TK_ARROW:      r = syntax_arrow(options, ast); break;
+    case TK_TUPLETYPE:  r = syntax_tupletype(options, ast); break;
     case TK_NOMINAL:    r = syntax_nominal(options, ast); break;
     case TK_MATCH:      r = syntax_match(options, ast); break;
     case TK_FFIDECL:    r = syntax_ffi(options, ast, false); break;
@@ -1153,6 +1327,8 @@ ast_result_t pass_syntax(ast_t** astp, pass_opt_t* options)
     case TK_USE:        r = syntax_use(options, ast); break;
     case TK_LAMBDACAPTURE:
                         r = syntax_lambda_capture(options, ast); break;
+    case TK_BARELAMBDATYPE:
+                        r = syntax_barelambdatype(options, ast); break;
     case TK_COMPILE_INTRINSIC:
                         r = syntax_compile_intrinsic(options, ast); break;
     case TK_COMPILE_ERROR:
@@ -1165,7 +1341,8 @@ ast_result_t pass_syntax(ast_t** astp, pass_opt_t* options)
     case TK_BOX:
     case TK_TAG:        r = syntax_cap(options, ast); break;
 
-    case TK_LAMBDA:     r = syntax_lambda(options, ast); break;
+    case TK_LAMBDA:
+    case TK_BARELAMBDA: r = syntax_lambda(options, ast); break;
     case TK_OBJECT:     r = syntax_object(options, ast); break;
     case TK_FUN:        r = syntax_fun(options, ast); break;
 
@@ -1175,11 +1352,13 @@ ast_result_t pass_syntax(ast_t** astp, pass_opt_t* options)
     case TK_CAP_ALIAS:
     case TK_CAP_ANY:    r = syntax_cap_set(options, ast); break;
 
+    case TK_ANNOTATION: r = syntax_annotation(options, ast); break;
+
     case TK_VALUEFORMALARG:
     case TK_VALUEFORMALPARAM:
       ast_error(options->check.errors, ast,
         "Value formal parameters not yet supported");
-      ast_error_continue(options->check.errors, ast_parent(ast), 
+      ast_error_continue(options->check.errors, ast_parent(ast),
         "Note that many functions including array indexing use the apply "
         "method rather than square brackets");
       r = AST_ERROR;
@@ -1190,6 +1369,8 @@ ast_result_t pass_syntax(ast_t** astp, pass_opt_t* options)
         "Compile time expressions not yet supported");
       r = AST_ERROR;
       break;
+
+    case TK_AS:         r = syntax_as(options, ast); break;
 
     default: break;
   }
@@ -1203,6 +1384,10 @@ ast_result_t pass_syntax(ast_t** astp, pass_opt_t* options)
       "Use a semi colon to separate expressions on the same line");
     r = AST_ERROR;
   }
+
+  ast_t* annotation = ast_annotation(ast);
+  if(annotation != NULL)
+    r = ast_visit(&annotation, pass_syntax, NULL, options, PASS_SYNTAX);
 
   return r;
 }

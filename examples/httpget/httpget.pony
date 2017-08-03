@@ -1,60 +1,62 @@
 use "assert"
+use "cli"
 use "collections"
+use "encode/base64"
+use "files"
 use "net/http"
 use "net/ssl"
-use "files"
-use "encode/base64"
-use "options"
+
+class val Config
+  let user: String
+  let pass: String
+  let output: String
+  let url: String
+
+  new val create(env: Env) ? =>
+    let cs = CommandSpec.leaf("httpget", "", [
+      OptionSpec.string("user", "Username for authenticated queries."
+        where short' = 'u', default' = "")
+      OptionSpec.string("pass", "Password for authenticated queries."
+        where short' = 'p', default' = "")
+      OptionSpec.string("output", "Name of file to write response body."
+        where short' = 'o', default' = "")
+    ],[
+      ArgSpec.string("url", "Url to query." where default' = None)
+    ])?.>add_help()?
+    let cmd =
+      match CommandParser(cs).parse(env.args, env.vars())
+      | let c: Command => c
+      | let ch: CommandHelp =>
+        ch.print_help(env.out)
+        env.exitcode(0)
+        error
+      | let se: SyntaxError =>
+        env.out.print(se.string())
+        env.exitcode(1)
+        error
+      end
+    user = cmd.option("user").string()
+    pass = cmd.option("pass").string()
+    output = cmd.option("output").string()
+    url = cmd.arg("url").string()
 
 actor Main
   """
   Fetch data from URLs on the command line.
   """
-  var user: String = ""
-  var pass: String = ""
-  var output: String = ""
-
   new create(env: Env) =>
     // Get common command line options.
-    let opts = Options(env.args)
-    opts
-      .add("user", "u", StringArgument)
-      .add("pass", "p", StringArgument)
-      .add("output", "o", StringArgument)
+    let c = try Config(env)? else return end
 
-    for option in opts do
-      match option
-      | ("user", let u: String) => user = u
-      | ("pass", let p: String) => pass = p
-      | ("output", let o: String) => output = o
-      | let err: ParseError =>
-         err.report(env.out)
-         _usage(env.out)
-         return
-      end
-    end
-
-    // The positional parameter is the URL to be fetched.
-    let urlref = try env.args(env.args.size() - 1) else "" end
     let url = try
-      URL.valid(urlref)
+      URL.valid(c.url)?
     else
-      env.out.print("Invalid URL")
+      env.out.print("Invalid URL: " + c.url)
       return
     end
 
     // Start the actor that does the real work.
-    _GetWork.create(env, url, user, pass, output)
-
-  fun tag _usage(out: StdStream) =>
-    """
-    Print command error message.
-    """
-    out.print(
-      "httpget [OPTIONS] URL\n" +
-      "  --user (-u)  Username for authenticated queries\n" +
-      "  --pass (-p)  Password for authenticated queries\n" +
-      "  --output (-o) Name of file to write response body\n")
+    _GetWork.create(env, url, c.user, c.pass, c.output)
 
 actor _GetWork
   """
@@ -74,7 +76,7 @@ actor _GetWork
       recover
         SSLContext
           .>set_client_verify(true)
-          .>set_authority(FilePath(env.root as AmbientAuth, "cacert.pem"))
+          .>set_authority(FilePath(env.root as AmbientAuth, "cacert.pem")?)?
         end
       end
 
@@ -108,10 +110,11 @@ actor _GetWork
         end
 
         // Submit the request
-        let sentreq = client(consume req, dumpMaker)
+        let sentreq = client(consume req, dumpMaker)?
+
         // Could send body data via `sentreq`, if it was a POST
       else
-        try env.out.print("Malformed URL: " + env.args(1)) end
+        try env.out.print("Malformed URL: " + env.args(1)?) end
       end
     else
       env.out.print("unable to use network")
@@ -148,7 +151,7 @@ actor _GetWork
     // Print the body if there is any.  This will fail in Chunked or
     // Stream transfer modes.
     try
-      let body = response.body()
+      let body = response.body()?
       for piece in body.values() do
         _env.out.write(piece)
       end
@@ -176,7 +179,7 @@ class NotifyFactory is HandlerFactory
   new iso create(main': _GetWork) =>
     _main = main'
 
-  fun apply(session: HTTPSession tag): HTTPHandler ref^ =>
+  fun apply(session: HTTPSession): HTTPHandler ref^ =>
     HttpNotify.create(_main, session)
 
 class HttpNotify is HTTPHandler
@@ -185,9 +188,9 @@ class HttpNotify is HTTPHandler
   called within the context of the HTTPSession actor.
   """
   let _main: _GetWork
-  let _session: HTTPSession tag
+  let _session: HTTPSession
 
-  new ref create(main': _GetWork, session: HTTPSession tag) =>
+  new ref create(main': _GetWork, session: HTTPSession) =>
     _main = main'
     _session = session
 
@@ -206,9 +209,11 @@ class HttpNotify is HTTPHandler
 
   fun ref finished() =>
     """
-    This marks the end of the received body data.
+    This marks the end of the received body data.  We are done with the
+    session.
     """
     _main.finished()
-    
+    _session.dispose()
+
   fun ref cancelled() =>
     _main.cancelled()
